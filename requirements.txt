@@ -1,0 +1,5 @@
+torch
+soundfile
+librosa
+transformers
+phonemizer

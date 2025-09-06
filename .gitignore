@@ -1,0 +1,16 @@
+# 忽略 Python 虛擬環境
+venv/
+
+# 忽略 VS Code 的設定
+.vscode/
+
+# 忽略 Python 的快取檔案
+__pycache__/
+*.pyc
+
+# 忽略下載的本地模型 (非常重要，因為它太大了！)
+ASRs/
+
+# 忽略音訊檔案 (如果它們只是測試用的話)
+TestAudio/
+*.wav
