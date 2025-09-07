@@ -5,16 +5,19 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 import os
 from phonemizer import phonemize
 import numpy as np
+from datetime import datetime
+from colorama import init, Fore, Style
 
-# --- 1, 2, 3, 4 部分與之前版本完全相同，此處省略以保持簡潔 ---
-# ...
+# 初始化 colorama
+init(autoreset=True)
+
 # --- 1. 全域設定 ---
 TARGET_SENTENCE = "how was your day"
 AUDIO_FILE_PATH = "./TestAudio/hello.wav"
 MODEL_NAME = "MultiBridge/wav2vec-LnNor-IPA-ft"
 MODEL_SAVE_PATH = "./ASRs/MultiBridge-wav2vec-LnNor-IPA-ft-local"
 
-# --- 2. 載入模型和處理器 ---
+# --- 2. 載入模型和處理器 (保持不變) ---
 print(f"正在準備模型 '{MODEL_NAME}'...")
 try:
     if not os.path.exists(MODEL_SAVE_PATH):
@@ -33,13 +36,15 @@ except Exception as e:
     print(f"處理或載入模型時發生錯誤: {e}")
     exit()
 
-# --- 3. 準備目標音標 (Target) ---
+# --- 3. 準備目標音標 (Target) - (已修改) ---
 print("正在準備目標音標...")
-target_ipa_by_word = phonemize(
-    TARGET_SENTENCE, language='en-us', backend='espeak', with_stress=True
-).split()
+# 在這一步就徹底移除重音符號，得到最乾淨的目標音標列表
+target_ipa_by_word = [
+    word.replace('ˌ', '').replace('ˈ', '')
+    for word in phonemize(TARGET_SENTENCE, language='en-us', backend='espeak', with_stress=True).split()
+]
 
-# --- 4. 讀取音訊並進行簡單辨識 ---
+# --- 4. 讀取音訊並進行辨識 (保持不變) ---
 print(f"正在讀取音訊檔案: {AUDIO_FILE_PATH}...")
 try:
     speech, sample_rate = sf.read(AUDIO_FILE_PATH)
@@ -56,14 +61,14 @@ predicted_ids = torch.argmax(logits, dim=-1)
 user_ipa_full = processor.decode(predicted_ids[0])
 
 
-# --- 5. 核心函式：返回按單詞分割的詳細對齊路徑 (與之前版本相同) ---
+# --- 5. 核心函式：現在處理的都是乾淨的音標，邏輯保持不變 ---
 def get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa):
     user_phonemes = list(user_phoneme_str.replace(' ', ''))
     target_phonemes_flat = []
     word_boundaries = []
     current_idx = 0
     for word_ipa in target_words_ipa:
-        phonemes = list(word_ipa.replace('ˌ', '').replace('ˈ', ''))
+        phonemes = list(word_ipa) # 已經是乾淨的音標
         target_phonemes_flat.extend(phonemes)
         current_idx += len(phonemes)
         word_boundaries.append(current_idx)
@@ -88,7 +93,7 @@ def get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa):
             user_path.insert(0, '-'); target_path.insert(0, target_phonemes_flat[j-1]); j -= 1
     
     alignments_by_word = []
-    user_word_start_idx = 0
+    word_start_idx = 0
     target_phoneme_count = 0
     
     for i, phoneme in enumerate(target_path):
@@ -96,45 +101,89 @@ def get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa):
             target_phoneme_count += 1
         
         if target_phoneme_count in word_boundaries:
-            target_alignment = target_path[user_word_start_idx:i+1]
-            user_alignment = user_path[user_word_start_idx:i+1]
+            target_alignment = target_path[word_start_idx:i+1]
+            user_alignment = user_path[word_start_idx:i+1]
             alignments_by_word.append({
                 "target": target_alignment,
                 "user": user_alignment
             })
-            user_word_start_idx = i + 1
+            word_start_idx = i + 1
             
     return alignments_by_word
 
-# --- 6. 最終的、格式完美的輸出函式 ---
-def format_and_print_final_version(alignments):
+# --- 6. 格式化輸出函式 (已簡化) ---
+def format_and_print_final_report(alignments):
+    total_phonemes = 0
+    total_errors = 0
+    correct_words = 0
+    
     target_line_parts = []
     user_line_parts = []
 
     for alignment in alignments:
-        # 為每個單詞的對齊計算最大寬度
+        word_is_correct = True
+        
         max_lens = [max(len(t), len(u)) for t, u in zip(alignment['target'], alignment['user'])]
         
-        # 格式化 Target 部分
-        target_word_parts = [phoneme.ljust(max_lens[i]) for i, phoneme in enumerate(alignment['target'])]
+        target_word_parts = [p.ljust(max_lens[j]) for j, p in enumerate(alignment['target'])]
         target_line_parts.append(f"[ {' '.join(target_word_parts)} ]")
         
-        # 格式化 User 部分
-        user_word_parts = [phoneme.ljust(max_lens[i]) for i, phoneme in enumerate(alignment['user'])]
+        user_word_parts = []
+        for j, user_phoneme in enumerate(alignment['user']):
+            target_phoneme = alignment['target'][j]
+            is_match = (user_phoneme == target_phoneme)
+            
+            if not is_match:
+                word_is_correct = False
+                if user_phoneme != '-' and target_phoneme != '-': # 替換
+                    total_errors += 1
+                elif user_phoneme == '-': # 省略
+                    total_errors += 1
+                else: # 插入
+                    total_errors += 1
+            
+            color = Fore.GREEN if is_match else Fore.RED
+            user_word_parts.append(f"{color}{user_phoneme.ljust(max_lens[j])}{Style.RESET_ALL}")
+        
         user_line_parts.append(f"[ {' '.join(user_word_parts)} ]")
+        
+        if word_is_correct:
+            correct_words += 1
+        
+        total_phonemes += sum(1 for p in alignment['target'] if p != '-')
 
-    # 組合並列印最終結果
+    # --- 計算統計資料 ---
+    total_words = len(alignments)
+    incorrect_words = total_words - correct_words
+    overall_score = (correct_words / total_words) * 100 if total_words > 0 else 0
+    phoneme_error_rate = (total_errors / total_phonemes) * 100 if total_phonemes > 0 else 0
+
+    # --- 列印報告 ---
+    separator = "="*70
+    print("\n" + separator)
+    print("Pronunciation Analysis".center(70))
+    print(separator + "\n")
+
+    print(f"Sentence: {TARGET_SENTENCE}\n")
     print(f"Target  : {' '.join(target_line_parts)}")
     print(f"User    : {' '.join(user_line_parts)}")
+
+    print("\n" + "-" * 70)
+    print("[ Summary ]")
+    print("-" * 70)
+    print(f"- Overall Score:         {overall_score:.1f}%")
+    print(f"- Total Words:           {total_words}")
+    print(f"- Correct Words:         {correct_words}")
+    print(f"- Incorrect Words:       {incorrect_words}")
+    print(f"- Phoneme Error Rate:    {phoneme_error_rate:.2f}% ({total_errors} errors in {total_phonemes} target phonemes)")
+    # (已修改) 使用 UTC 時間
+    print(f"- Analysis Timestamp:    {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} (UTC)")
+    
+    print("\n" + separator)
 
 
 # --- 主流程 ---
 print("正在進行音素級對齊...")
 word_alignments = get_phoneme_alignments_by_word(user_ipa_full, target_ipa_by_word)
 
-print("\n" + "="*60)
-print("                 發音對比分析結果")
-print("="*60)
-print(f"Sentence: {TARGET_SENTENCE}\n")
-format_and_print_final_version(word_alignments)
-print("="*60)
+format_and_print_final_report(word_alignments)

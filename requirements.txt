@@ -3,3 +3,6 @@ soundfile
 librosa
 transformers
 phonemizer
+fastapi
+uvicorn[standard]
+colorama
