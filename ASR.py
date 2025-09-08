@@ -40,7 +40,7 @@ except Exception as e:
 print("正在準備目標音標...")
 # 在這一步就徹底移除重音符號，得到最乾淨的目標音標列表
 target_ipa_by_word = [
-    word.replace('ˌ', '').replace('ˈ', '')
+    word.replace('ˌ', '').replace('ˈ', '').replace('ː', '')
     for word in phonemize(TARGET_SENTENCE, language='en-us', backend='espeak', with_stress=True).split()
 ]
 
