@@ -1,8 +1,10 @@
+fastapi
+uvicorn[standard]
+pyngrok
+python-multipart
 torch
 soundfile
 librosa
 transformers
-phonemizer
-fastapi
-uvicorn[standard]
-colorama
+phonemizer[espeak]
+numpy
