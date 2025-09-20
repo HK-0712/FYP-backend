@@ -183,12 +183,14 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
 
     final_result = {
         "sentence": sentence,
-        "analysisTimestampUTC": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        "analysisTimestampUTC": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S (UTC)'),
         "summary": {
             "overallScore": round(overall_score, 1),
             "totalWords": total_words,
             "correctWords": correct_words_count,
-            "phonemeErrorRate": round(phoneme_error_rate, 2)
+            "phonemeErrorRate": round(phoneme_error_rate, 2),
+            "total_errors": total_errors,
+            "total_target_phonemes": total_phonemes
         },
         "words": words_data
     }
