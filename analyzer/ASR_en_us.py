@@ -1,5 +1,3 @@
-# analyzer/ASR_en_us.py
-
 import torch
 import soundfile as sf
 import librosa
@@ -46,7 +44,31 @@ def load_model():
         print(f"處理或載入 en-us 模型時發生錯誤: {e}")
         raise RuntimeError(f"Failed to load en-us model: {e}")
 
-# --- 2. 核心分析函數 (主入口) (保持不變) ---
+# --- 2. 智能 IPA 切分函數 (已更新) ---
+# 移除了包含 'ː' 的組合，因為我們將在源頭移除它
+MULTI_CHAR_PHONEMES = {
+    'tʃ', 'dʒ', # 輔音 (Affricates)
+    'eɪ', 'aɪ', 'oʊ', 'aʊ', 'ɔɪ', # 雙元音 (Diphthongs)
+    'ɪə', 'eə', 'ʊə', 'ər' # R-controlled 和其他組合
+}
+
+def _tokenize_ipa(ipa_string: str) -> list:
+    """
+    將 IPA 字串智能地切分為音素列表，能正確處理多字元音素。
+    """
+    phonemes = []
+    i = 0
+    s = ipa_string.replace(' ', '')
+    while i < len(s):
+        if i + 1 < len(s) and s[i:i+2] in MULTI_CHAR_PHONEMES:
+            phonemes.append(s[i:i+2])
+            i += 2
+        else:
+            phonemes.append(s[i])
+            i += 1
+    return phonemes
+
+# --- 3. 核心分析函數 (主入口) (已修改) ---
 def analyze(audio_file_path: str, target_sentence: str) -> dict:
     """
     接收音訊檔案路徑和目標句子，回傳詳細的發音分析字典。
@@ -55,9 +77,13 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
     if not processor or not model:
         raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
 
+    target_ipa_by_word_str = phonemize(target_sentence, language='en-us', backend='espeak', with_stress=True, strip=True).split()
+    
+    # 【【【【【 關 鍵 修 改 在 這 裡 】】】】】
+    # 在切分前，移除所有重音和長音符號，以匹配 ASR 的輸出特性
     target_ipa_by_word = [
-        word.replace('ˌ', '').replace('ˈ', '').replace('ː', '')
-        for word in phonemize(target_sentence, language='en-us', backend='espeak', with_stress=True).split()
+        _tokenize_ipa(word.replace('ˌ', '').replace('ˈ', '').replace('ː', ''))
+        for word in target_ipa_by_word_str
     ]
     target_words_original = target_sentence.split()
 
@@ -79,22 +105,20 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
     return _format_to_json_structure(word_alignments, target_sentence, target_words_original)
 
 
-# --- 3. 對齊函數 (核心邏輯已修改) ---
-def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa):
+# --- 4. 對齊函數 (與上一版相同) ---
+def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
-    (已修改) 執行音素對齊並確保輸出與單詞數量匹配。
+    (已修改) 使用新的切分邏輯執行音素對齊。
     """
-    user_phonemes = list(user_phoneme_str.replace(' ', ''))
+    user_phonemes = _tokenize_ipa(user_phoneme_str)
     
-    # --- DP 矩陣計算部分 (保持不變) ---
     target_phonemes_flat = []
-    word_boundaries_indices = [] # 儲存每個單詞結束時在扁平列表中的索引
+    word_boundaries_indices = [] 
     current_idx = 0
-    for word_ipa in target_words_ipa:
-        phonemes = list(word_ipa)
-        target_phonemes_flat.extend(phonemes)
-        current_idx += len(phonemes)
-        word_boundaries_indices.append(current_idx - 1) # 記錄最後一個音素的索引
+    for word_ipa_tokens in target_words_ipa_tokenized:
+        target_phonemes_flat.extend(word_ipa_tokens)
+        current_idx += len(word_ipa_tokens)
+        word_boundaries_indices.append(current_idx - 1)
 
     dp = np.zeros((len(user_phonemes) + 1, len(target_phonemes_flat) + 1))
     for i in range(1, len(user_phonemes) + 1): dp[i][0] = i
@@ -104,7 +128,6 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa):
             cost = 0 if user_phonemes[i-1] == target_phonemes_flat[j-1] else 1
             dp[i][j] = min(dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + cost)
 
-    # --- 回溯路徑計算 (保持不變) ---
     i, j = len(user_phonemes), len(target_phonemes_flat)
     user_path, target_path = [], []
     while i > 0 or j > 0:
@@ -116,19 +139,13 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa):
         else:
             user_path.insert(0, '-'); target_path.insert(0, target_phonemes_flat[j-1]); j -= 1
     
-    # --- (核心修改) 按單詞邊界分割對齊路徑 ---
     alignments_by_word = []
     word_start_idx_in_path = 0
     target_phoneme_counter_in_path = 0
 
-    # 遍歷對齊後的路徑
     for path_idx, p in enumerate(target_path):
-        # 只有當我們遇到一個非'-'的目標音素時，計數器才增加
         if p != '-':
-            # 檢查這個音素是否是某個單詞的最後一個音素
             if target_phoneme_counter_in_path in word_boundaries_indices:
-                # 如果是，這標誌著一個單詞的結束
-                # 提取從上一個單詞結束到現在這個單詞結束的所有路徑
                 target_alignment = target_path[word_start_idx_in_path : path_idx + 1]
                 user_alignment = user_path[word_start_idx_in_path : path_idx + 1]
                 
@@ -137,21 +154,23 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa):
                     "user": user_alignment
                 })
                 
-                # 更新下一個單詞的起始索引
                 word_start_idx_in_path = path_idx + 1
             
             target_phoneme_counter_in_path += 1
             
     return alignments_by_word
 
-# --- 4. 格式化函數 (保持不變) ---
+# --- 5. 格式化函數 (與上一版相同) ---
 def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     total_phonemes = 0
     total_errors = 0
     correct_words_count = 0
     words_data = []
 
-    for i, alignment in enumerate(alignments):
+    num_words_to_process = min(len(alignments), len(original_words))
+
+    for i in range(num_words_to_process):
+        alignment = alignments[i]
         word_is_correct = True
         phonemes_data = []
         
@@ -168,22 +187,38 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
             
             if not is_match:
                 word_is_correct = False
-                if user_phoneme != '-' and target_phoneme != '-': total_errors += 1
-                elif user_phoneme == '-': total_errors += 1
-                else: total_errors += 1
+                if not (user_phoneme == '-' and target_phoneme == '-'):
+                    total_errors += 1
         
         if word_is_correct:
             correct_words_count += 1
             
         words_data.append({
-            "word": original_words[i] if i < len(original_words) else "N/A",
+            "word": original_words[i],
             "isCorrect": word_is_correct,
             "phonemes": phonemes_data
         })
         
         total_phonemes += sum(1 for p in alignment['target'] if p != '-')
 
-    total_words = len(alignments)
+    total_words = len(original_words)
+    if len(alignments) < total_words:
+        for i in range(len(alignments), total_words):
+            # 確保這裡也移除 'ː'
+            missed_word_ipa_str = phonemize(original_words[i], language='en-us', backend='espeak', strip=True).replace('ː', '')
+            missed_word_ipa = _tokenize_ipa(missed_word_ipa_str)
+            phonemes_data = []
+            for p_ipa in missed_word_ipa:
+                phonemes_data.append({"target": p_ipa, "user": "-", "isMatch": False})
+                total_errors += 1
+                total_phonemes += 1
+
+            words_data.append({
+                "word": original_words[i],
+                "isCorrect": False,
+                "phonemes": phonemes_data
+            })
+
     overall_score = (correct_words_count / total_words) * 100 if total_words > 0 else 0
     phoneme_error_rate = (total_errors / total_phonemes) * 100 if total_phonemes > 0 else 0
 
