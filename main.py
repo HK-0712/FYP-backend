@@ -24,7 +24,7 @@ app.add_middleware(
 )
 
 # --- 全域變數和初始化邏輯 (保持不變) ---
-TEMP_DIR = "./temp_audio"
+TEMP_DIR = "/tmp/temp_audio"
 ANALYZERS = {} 
 
 if not os.path.exists(TEMP_DIR):
