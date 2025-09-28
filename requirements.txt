@@ -8,3 +8,5 @@ librosa
 transformers
 phonemizer[espeak]
 numpy
+epitran
+g2p
