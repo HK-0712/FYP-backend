@@ -10,6 +10,10 @@ import unicodedata
 import re
 import epitran
 
+# 【【【【【 新增程式碼 #1：自動檢測可用設備 】】】】】
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"INFO: ASR_fr_fr.py is configured to use device: {DEVICE}")
+
 # --- 1. 全域設定與模型載入函數 (已修改為法語模型) ---
 MODEL_NAME = "Cnam-LMSSC/wav2vec2-french-phonemizer"
 MODEL_SAVE_PATH = "./ASRs/Cnam-LMSSC-wav2vec2-french-phonemizer-local"
@@ -41,6 +45,7 @@ def load_model():
         
         processor = Wav2Vec2Processor.from_pretrained(MODEL_SAVE_PATH)
         model = Wav2Vec2ForCTC.from_pretrained(MODEL_SAVE_PATH)
+        model.to(DEVICE)  # 將模型移動到檢測到的設備上
         print("法語 (fr-fr) 模型和處理器載入成功！")
         return True
     except Exception as e:
@@ -106,6 +111,7 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
         raise IOError(f"讀取或處理音訊時發生錯誤: {e}")
     
     input_values = processor(speech, sampling_rate=16000, return_tensors="pt").input_values
+    input_values = input_values.to(DEVICE)
     with torch.no_grad():
         logits = model(input_values).logits
     predicted_ids = torch.argmax(logits, dim=-1)
