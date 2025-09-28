@@ -4,14 +4,15 @@ FROM python:3.10-slim
 # 2. 設定容器內的工作目錄
 WORKDIR /app
 
-# 3. 安裝系統級依賴 (最關鍵的一步：安裝 espeak-ng 和其他工具)
+# 3. 安裝系統級依賴 (最關鍵的一步：安裝 espeak-ng、git 和其他工具)
 #    -y 自動回答 'yes'
 #    --no-install-recommends 避免安裝不必要的建議套件，保持映像檔小巧
 RUN apt-get update && apt-get install -y --no-install-recommends \
     espeak-ng \
     libsndfile1 \
     ffmpeg \
-    wget && \
+    wget \
+    git && \
     rm -rf /var/lib/apt/lists/*
 
 # 4. 複製 requirements.txt 檔案到容器中並安裝 Python 套件
