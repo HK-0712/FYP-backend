@@ -24,3 +24,5 @@ COPY . .
 
 # 這行是可選的，它設定了當容器直接執行時的預設命令
 # CMD ["python", "your_script.py"]
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
