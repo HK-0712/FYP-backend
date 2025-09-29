@@ -16,41 +16,34 @@ print(f"INFO: ASR_fr_fr.py is configured to use device: {DEVICE}")
 
 # --- 1. 全域設定與模型載入函數 (已修改為法語模型) ---
 MODEL_NAME = "Cnam-LMSSC/wav2vec2-french-phonemizer"
-MODEL_SAVE_PATH = "./ASRs/Cnam-LMSSC-wav2vec2-french-phonemizer-local"
 
 processor = None
 model = None
 
 def load_model():
     """
-    在應用程式啟動時載入法語模型和處理器。
-    如果模型已載入，則跳過。
+    (方案 A) 讓 transformers 自動處理模型的下載、快取和加載。
+    它會自動使用 Dockerfile 中設定的 HF_HOME 環境變數。
     """
     global processor, model
     if processor and model:
-        print("法語模型已載入，跳過。")
+        print(f"模型 '{MODEL_NAME}' 已載入，跳過。")
         return True
 
-    print(f"正在準備法語 (fr-fr) ASR 模型 '{MODEL_NAME}'...")
+    print(f"正在準備 ASR 模型 '{MODEL_NAME}'...")
+    print(f"Transformers 將自動在 HF_HOME 指定的快取中尋找或下載。")
     try:
-        if not os.path.exists(MODEL_SAVE_PATH):
-            print(f"本地找不到模型，正在從 Hugging Face 下載並儲存...")
-            processor_to_save = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-            model_to_save = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
-            processor_to_save.save_pretrained(MODEL_SAVE_PATH)
-            model_to_save.save_pretrained(MODEL_SAVE_PATH)
-            print("模型已成功下載並儲存。")
-        else:
-            print(f"在 '{MODEL_SAVE_PATH}' 中找到本地模型。")
+        # 直接使用模型的線上名稱調用 from_pretrained
+        # 這就是魔法發生的地方！
+        processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
+        model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
         
-        processor = Wav2Vec2Processor.from_pretrained(MODEL_SAVE_PATH)
-        model = Wav2Vec2ForCTC.from_pretrained(MODEL_SAVE_PATH)
-        model.to(DEVICE)  # 將模型移動到檢測到的設備上
-        print("法語 (fr-fr) 模型和處理器載入成功！")
+        model.to(DEVICE)
+        print(f"模型 '{MODEL_NAME}' 和處理器載入成功！")
         return True
     except Exception as e:
-        print(f"處理或載入 fr-fr 模型時發生錯誤: {e}")
-        raise RuntimeError(f"Failed to load fr-fr model: {e}")
+        print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
+        raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
 def _tokenize_unicode_ipa(ipa_string: str) -> list:
     """

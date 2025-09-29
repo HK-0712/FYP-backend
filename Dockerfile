@@ -1,6 +1,9 @@
 # 1. 選擇一個包含 Python 的官方 Linux 映像
 FROM python:3.10-slim
 
+ENV HF_HOME=/tmp/huggingface
+ENV HF_DATASETS_CACHE=/tmp/huggingface/datasets
+
 # 2. 設定容器內的工作目錄
 WORKDIR /app
 
