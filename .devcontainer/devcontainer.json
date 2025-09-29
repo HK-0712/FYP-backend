@@ -1,6 +1,11 @@
 {
     "name": "FYP Backend (GPU)",
-    "image": "e226274b3239", // 直接使用您已有的鏡像 ID
+
+    "build": {
+        // 假設您的 Dockerfile 位於專案根目錄
+        "dockerfile": "../Dockerfile", 
+        "context": ".."
+    },
 
     // 這是最最最關鍵的部分！
     "runArgs": [
@@ -18,7 +23,7 @@
     "shutdownAction": "none",
 
     // 在容器創建後運行的命令 (可選，但推薦)
-    "postCreateCommand": "pip install -r requirements.txt",
+    //"postCreateCommand": "pip install -r requirements.txt",
 
     // VS Code 擴展推薦 (可選)
     "customizations": {

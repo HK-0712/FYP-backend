@@ -11,6 +11,11 @@ WORKDIR /app
 #    -y 自動回答 'yes'
 #    --no-install-recommends 避免安裝不必要的建議套件，保持映像檔小巧
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    mecab \
+    libmecab-dev \
+    mecab-ipadic-utf8 \
     espeak-ng \
     libsndfile1 \
     ffmpeg \
@@ -20,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # 4. 複製 requirements.txt 檔案到容器中並安裝 Python 套件
 COPY requirements.txt .
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 5. 將專案中的所有其他檔案複製到容器中

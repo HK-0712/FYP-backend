@@ -10,3 +10,5 @@ phonemizer[espeak]
 numpy
 epitran
 g2p
+pyopenjtalk
+mecab-python3
