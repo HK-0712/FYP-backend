@@ -89,6 +89,10 @@ async def lifespan(app: FastAPI):
 # 【【修改】】告訴 FastAPI 使用我們上面定義的 lifespan
 app = FastAPI(title="Pronunciation Analysis API", lifespan=lifespan)
 
+@app.get("/health", status_code=200)
+def health_check():
+    return {"status": "ok"}
+
 # CORS 中介軟體設定 (不變)
 origins = ["*"]
 app.add_middleware(
