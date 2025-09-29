@@ -5,6 +5,7 @@
 #    所有需要的模組都放在檔案的最頂部。
 # =======================================================================
 import os
+import logging
 import importlib
 import uvicorn
 import shutil
@@ -13,6 +14,14 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
+
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # record.getMessage() 會包含像 "GET /health HTTP/1.1" 這樣的訊息
+        return record.getMessage().find("/health") == -1
+
+# 將過濾器應用到 uvicorn 的存取日誌
+logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 # =======================================================================
 # 2. 全域變數與配置區 (Global Variables & Config)
