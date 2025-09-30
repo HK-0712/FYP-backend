@@ -1,3 +1,5 @@
+# ASR_jp_jp.py
+
 # =======================================================================
 # 1. 匯入區 (Imports)
 #    - 新增了 pyopenjtalk 和 MeCab
@@ -160,21 +162,35 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
 # -----------------------------------------------------------------------
 # 4.1. 對齊函數 (語言無關)
 # -----------------------------------------------------------------------
+# 【【【【【 最終的、決定性的日文版邏輯修正 】】】】】
 def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
     使用動態規劃執行音素對齊。此函數是語言無關的。
     """
-    user_phonemes = _tokenize_asr_output(user_phoneme_str)
+    # 【【【【【 關鍵修改 】】】】】
+    # 舊的錯誤做法：user_phonemes = user_phoneme_str.split()
+    # 這只會得到 ['a', 'sh', 'i', 't', 'a'] 這樣的列表。
+    
+    # 新的正確做法：
+    # 1. 先按空格分割成 "音素單詞"。
+    # 2. 再將每個 "音素單詞" 徹底地展開成單個音素字元。
+    # 例如，"a sh i t a" -> ['a', 'sh', 'i', 't', 'a'] -> ['a', 's', 'h', 'i', 't', 'a']
+    # 這與英文版的 _tokenize_ipa() 達成了相同的效果：在對齊前就切分到最小單元。
+    user_phonemes = [char for word in user_phoneme_str.split() for char in word]
+
+    # --- 後續的對齊邏輯完全保持不變 ---
     
     target_phonemes_flat = []
     word_boundaries_indices = [] 
     current_idx = 0
     for word_ipa_tokens in target_words_ipa_tokenized:
-        target_phonemes_flat.extend(word_ipa_tokens)
-        current_idx += len(word_ipa_tokens)
+        # 對於 target，我們也需要確保它是最小單元
+        flat_tokens = [char for word in word_ipa_tokens for char in word]
+        target_phonemes_flat.extend(flat_tokens)
+        current_idx += len(flat_tokens)
         word_boundaries_indices.append(current_idx - 1)
 
-    # 如果目標音素為空 (例如，輸入句子只有標點符號)，返回空對齊
+    # 如果目標音素為空，返回空對齊
     if not target_phonemes_flat:
         return []
 
@@ -189,7 +205,6 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
     i, j = len(user_phonemes), len(target_phonemes_flat)
     user_path, target_path = [], []
     while i > 0 or j > 0:
-        # 確保索引不會越界
         cost = float('inf')
         if i > 0 and j > 0:
             cost = 0 if user_phonemes[i-1] == target_phonemes_flat[j-1] else 1
@@ -200,7 +215,7 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
             user_path.insert(0, user_phonemes[i-1]); target_path.insert(0, '-'); i -= 1
         elif j > 0 and (i == 0 or dp[i][j] == dp[i][j-1] + 1):
             user_path.insert(0, '-'); target_path.insert(0, target_phonemes_flat[j-1]); j -= 1
-        else: # i == 0 and j == 0
+        else:
             break
     
     alignments_by_word = []
