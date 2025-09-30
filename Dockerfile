@@ -4,6 +4,9 @@ FROM python:3.10-slim
 ENV HF_HOME=/tmp/huggingface
 ENV HF_DATASETS_CACHE=/tmp/huggingface/datasets
 
+#  為 MeCab 設定正確的設定檔路徑，解決 "no such file or directory" 錯誤
+ENV MECABRC=/etc/mecabrc
+
 # 2. 設定容器內的工作目錄
 WORKDIR /app
 
