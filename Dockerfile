@@ -31,6 +31,8 @@ COPY requirements.txt .
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN python -c "import pyopenjtalk; pyopenjtalk.g2p('test')"
+
 # 5. 將專案中的所有其他檔案複製到容器中
 COPY . .
 
