@@ -2,15 +2,15 @@
     "name": "FYP Backend (GPU)",
 
     // 【【【【【 方案 A：快速模式 (當依賴沒變時) 】】】】】
-    "image": "my-project-image:latest", // 使用上次成功建置的、帶有標籤的映像
+    //"image": "my-project-image:latest", // 使用上次成功建置的、帶有標籤的映像
     // "build": { ... },
 
     // 【【【【【 方案 B：重建模式 (當依賴改變時) 】】】】】
     // "image": "my-project-image:latest",
-    // "build": {
-    //     "dockerfile": "../Dockerfile",
-    //     "context": ".."
-    // },
+    "build": {
+        "dockerfile": "../Dockerfile",
+        "context": ".."
+    },
 
     // 這是最最最關鍵的部分！
     "runArgs": [

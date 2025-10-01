@@ -10,6 +10,8 @@ ENV MECABRC=/etc/mecabrc
 # 2. 設定容器內的工作目錄
 WORKDIR /app
 
+ENV NUMBA_CACHE_DIR=/tmp
+
 # 3. 安裝系統級依賴 (最關鍵的一步：安裝 espeak-ng、git 和其他工具)
 #    -y 自動回答 'yes'
 #    --no-install-recommends 避免安裝不必要的建議套件，保持映像檔小巧
