@@ -1,0 +1,35 @@
+# 1. 首先，忽略所有被 .gitignore 忽略的檔案
+#    (這是一個簡化的概念，實際操作是手動複製 .gitignore 的內容)
+#    或者，更直接地，將 .gitignore 的內容複製過來，然後擴展
+
+# 2. 忽略 Git 自身的資料夾
+.git
+
+# 3. 忽略 Docker 自身的檔案
+Dockerfile
+.dockerignore
+
+# 4. 忽略本地開發環境的設定
+.vscode/
+.devcontainer/
+
+# 5. 忽略 Python 的快取和虛擬環境
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 6. 【【【 忽略您專案中特有的大型檔案和資料夾 】】】
+#    這是最重要的部分！
+ASRs/
+data/
+*.pth
+*.safetensors
+
+# 7. 忽略文件和非必要的檔案
+README.md
+docs/
+
+# 8. 忽略作業系統產生的檔案
+.DS_Store
+Thumbs.db

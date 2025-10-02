@@ -1,7 +1,13 @@
 # =======================================================================
-# 1. 匯入區 (Imports)
-#    - 與英文版完全相同，因為我們使用相同的工具鏈。
+# analyzer/ASR_pt_br.py
+# 巴西葡萄牙語發音分析器
+# 版本：v2.0 (與 en_us.py 邏輯對齊)
+# 描述：此版本完全遵循 en_us.py 的程式碼結構和算法實現，
+#       僅在語言特定配置（模型名稱、G2P語言）上有所不同，
+#       並採用了更健壯的、基於 Unicode 的 IPA 切分方法以適應葡萄牙語。
 # =======================================================================
+
+# --- 1. 匯入區 (與 en_us.py 保持一致) ---
 import torch
 import soundfile as sf
 import librosa
@@ -10,33 +16,23 @@ import os
 from phonemizer import phonemize
 import numpy as np
 from datetime import datetime, timezone
-import re
-import unicodedata
+import unicodedata # 【保留】這是處理葡萄牙語鼻音等音素的更優方案
+import re # 【保留】用於更準確地切分單詞
 
-# =======================================================================
-# 2. 全域變數與配置區 (Global Variables & Config)
-# =======================================================================
-# 自動檢測可用設備
+# --- 2. 全域設定與模型載入 ---
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"INFO: ASR_pt_br.py is configured to use device: {DEVICE}")
 
-# 【【【【【 關鍵修改 1：設定為葡萄牙語 ASR 模型 】】】】】
+# 【關鍵修改 1：設定為葡萄牙語 ASR 模型】
 MODEL_NAME = "caiocrocha/wav2vec2-large-xlsr-53-phoneme-portuguese"
 
 processor = None
 model = None
 
-# =======================================================================
-# 3. 核心業務邏輯區 (Core Business Logic)
-# =======================================================================
-
-# -----------------------------------------------------------------------
-# 3.1. 模型載入函數
-#      - 與英文版邏輯完全相同，僅替換模型名稱。
-# -----------------------------------------------------------------------
 def load_model():
     """
     載入葡萄牙語 ASR 模型和對應的處理器。
+    (此函數邏輯與 en_us.py 完全相同)
     """
     global processor, model
     if processor and model:
@@ -45,7 +41,6 @@ def load_model():
 
     print(f"正在準備 ASR 模型 '{MODEL_NAME}'...")
     try:
-        # 這些模型通常使用標準的 Wav2Vec2Processor 和 Wav2Vec2ForCTC
         processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
         model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
         model.to(DEVICE)
@@ -55,123 +50,104 @@ def load_model():
         print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
         raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
-# -----------------------------------------------------------------------
-# 3.2. 智能 IPA 切分函數
-#      - 【關鍵修改 2】針對葡萄牙語的 IPA 特性進行調整。
-# -----------------------------------------------------------------------
+# --- 3. 智能 IPA 切分函數 ---
+# 【關鍵修改 2：保留更優越的通用切分邏輯】
+# 為了正確處理葡萄牙語的鼻化元音 (如 ɐ̃) 和塞擦音 (如 dʒ)，
+# 必須保留這個比英文版更強大的切分函數。
 def _tokenize_ipa(ipa_string: str) -> list:
     """
-    將 IPA 字串智能地切分為音素列表。
-    這個版本能處理葡萄牙語中常見的多字元音素和帶有附加符號的音素。
+    將 IPA 字串智能地切分為音素列表，能正確處理帶有附加符號的組合字符。
     """
     phonemes = []
-    # 移除所有由 phonemizer 產生的多餘空格
     s = ipa_string.replace(' ', '')
     i = 0
     while i < len(s):
-        # 檢查葡萄牙語中常見的雙字元塞擦音
+        # 優先處理葡萄牙語中常見的雙字符塞擦音
         if i + 1 < len(s) and s[i:i+2] in {'dʒ', 'tʃ'}:
             phonemes.append(s[i:i+2])
             i += 2
             continue
 
-        # 處理帶有鼻化符 (波浪號) 的元音
-        # unicodedata.category(char) == 'Mn' 用於檢測非間距標記 (例如波浪號)
+        # 處理基礎字符及其後續的非間距標記 (例如鼻化符 ~)
         current_char = s[i]
         i += 1
         while i < len(s) and unicodedata.category(s[i]) == 'Mn':
             current_char += s[i]
             i += 1
         phonemes.append(current_char)
-        
     return phonemes
 
-# -----------------------------------------------------------------------
-# 3.3. 核心分析函數 (主入口)
-#      - 【關鍵修改 3】將 G2P 語言設定為 'pt-br'。
-# -----------------------------------------------------------------------
+# --- 4. 核心分析函數 (主入口) ---
 def analyze(audio_file_path: str, target_sentence: str) -> dict:
     """
     接收音訊檔案路徑和目標葡萄牙語句子，回傳詳細的發音分析字典。
+    (此函數結構與 en_us.py 完全對齊)
     """
     if not processor or not model:
         raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
 
-    # --- G2P 步驟 ---
-    # 1. 使用正則表達式來準確地分割單詞，並自動忽略標點符號
+    # 1. 準備目標音素 (G2P)
     target_words_original = re.findall(r"[\w'-]+", target_sentence)
-    # 2. 將分割好的、乾淨的單詞重新組合，再傳給 phonemizer
     cleaned_sentence = " ".join(target_words_original)
-    
-    # 3. 呼叫 phonemizer，並將語言設定為 'pt-br' (巴西葡萄牙語)
+
+    # 【關鍵修改 3：設定 G2P 語言為 'pt-br'】
     target_ipa_by_word_str = phonemize(
         cleaned_sentence,
         language='pt-br',
         backend='espeak',
-        with_stress=True, # 保留重音符號以便後續處理
+        with_stress=True,
         strip=True
     ).split()
-
-    # 4. 確保單詞列表和音素列表的長度一致，以防 G2P 工具出錯
+    
     if len(target_words_original) != len(target_ipa_by_word_str):
-        print(f"警告：單詞數量 ({len(target_words_original)}) 與 G2P 結果數量 ({len(target_ipa_by_word_str)}) 不匹配。將進行截斷處理。")
+        print(f"警告: G2P 後單詞數量 ({len(target_ipa_by_word_str)}) 與原始單詞數量 ({len(target_words_original)}) 不匹配。將進行截斷。")
         min_len = min(len(target_words_original), len(target_ipa_by_word_str))
         target_words_original = target_words_original[:min_len]
         target_ipa_by_word_str = target_ipa_by_word_str[:min_len]
 
-    # 5. 清理 G2P 輸出的音素，並使用我們為葡萄牙語定製的切分函數
+    # 【關鍵修改 4：與 en_us.py 對齊，在準備目標音素時就清除所有不比較的符號】
     target_ipa_by_word = [
         _tokenize_ipa(word.replace('ˈ', '').replace('ˌ', '').replace('ː', ''))
         for word in target_ipa_by_word_str
     ]
 
-    # --- ASR 步驟 ---
+    # 2. 處理音訊並進行語音辨識 (ASR)
     try:
         speech, sample_rate = sf.read(audio_file_path)
-        if len(speech) == 0:
-            print("警告: 音訊檔案為空。")
-            user_ipa_full = ""
-        else:
-            if sample_rate != 16000:
-                speech = librosa.resample(y=speech, orig_sr=sample_rate, target_sr=16000)
-            
-            input_values = processor(speech, sampling_rate=16000, return_tensors="pt").input_values
-            input_values = input_values.to(DEVICE)
-            with torch.no_grad():
-                logits = model(input_values).logits
-            predicted_ids = torch.argmax(logits, dim=-1)
-            # 解碼後，移除模型可能產生的分隔符 '|'
-            user_ipa_full = processor.decode(predicted_ids[0]).replace('|', '')
-
+        if sample_rate != 16000:
+            speech = librosa.resample(y=speech, orig_sr=sample_rate, target_sr=16000)
     except Exception as e:
         raise IOError(f"讀取或處理音訊時發生錯誤: {e}")
     
-    # --- 對齊與格式化步驟 (與英文版邏輯完全相同) ---
+    input_values = processor(speech, sampling_rate=16000, return_tensors="pt").input_values
+    input_values = input_values.to(DEVICE)
+    with torch.no_grad():
+        logits = model(input_values).logits
+    predicted_ids = torch.argmax(logits, dim=-1)
+    
+    # 【關鍵修改 5：與 en_us.py 對齊，清理模型輸出以匹配目標音素的處理方式】
+    user_ipa_full = processor.decode(predicted_ids[0]).replace('|', '').replace('ː', '')
+
+    # 3. 執行對齊並格式化輸出
     word_alignments = _get_phoneme_alignments_by_word(user_ipa_full, target_ipa_by_word)
     return _format_to_json_structure(word_alignments, target_sentence, target_words_original)
 
-# =======================================================================
-# 4. 對齊與格式化函數區 (Alignment & Formatting)
-#    - 【注意】這些函數是語言無關的，直接從英文版複製而來，無需修改。
-# =======================================================================
 
-# -----------------------------------------------------------------------
-# 4.1. 對齊函數 (語言無關)
-# -----------------------------------------------------------------------
+# --- 5. 對齊函數 (與 en_us.py 的實現邏輯完全對齊) ---
 def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
-    使用動態規劃執行音素對齊。此函數是語言無關的。
+    使用動態規劃執行音素對齊。
+    (此函數實現與 en_us.py 完全相同)
     """
-    # 對於 ASR 的輸出，我們也使用相同的、更通用的切分函數
     user_phonemes = _tokenize_ipa(user_phoneme_str)
     
-    target_phonemes_flat = [p for word in target_words_ipa_tokenized for p in word]
-    
-    # 如果目標音素為空 (例如，輸入句子只有標點符號)，返回空對齊
-    if not target_phonemes_flat:
-        return []
-        
-    word_boundaries_indices = np.cumsum([len(word) for word in target_words_ipa_tokenized]) - 1
+    target_phonemes_flat = []
+    word_boundaries_indices = [] 
+    current_idx = 0
+    for word_ipa_tokens in target_words_ipa_tokenized:
+        target_phonemes_flat.extend(word_ipa_tokens)
+        current_idx += len(word_ipa_tokens)
+        word_boundaries_indices.append(current_idx - 1)
 
     dp = np.zeros((len(user_phonemes) + 1, len(target_phonemes_flat) + 1))
     for i in range(1, len(user_phonemes) + 1): dp[i][0] = i
@@ -187,35 +163,32 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
         cost = float('inf') if i == 0 or j == 0 else (0 if user_phonemes[i-1] == target_phonemes_flat[j-1] else 1)
         if i > 0 and j > 0 and dp[i][j] == dp[i-1][j-1] + cost:
             user_path.insert(0, user_phonemes[i-1]); target_path.insert(0, target_phonemes_flat[j-1]); i -= 1; j -= 1
-        elif i > 0 and (j == 0 or dp[i][j] == dp[i-1][j] + 1):
+        elif i > 0 and dp[i][j] == dp[i-1][j] + 1:
             user_path.insert(0, user_phonemes[i-1]); target_path.insert(0, '-'); i -= 1
-        elif j > 0 and (i == 0 or dp[i][j] == dp[i][j-1] + 1):
+        else:
             user_path.insert(0, '-'); target_path.insert(0, target_phonemes_flat[j-1]); j -= 1
-        else: break
     
     alignments_by_word = []
     word_start_idx_in_path = 0
     target_phoneme_counter_in_path = 0
-    word_boundary_iter = iter(word_boundaries_indices)
-    current_word_boundary = next(word_boundary_iter, -1)
+
     for path_idx, p in enumerate(target_path):
         if p != '-':
-            if target_phoneme_counter_in_path == current_word_boundary:
+            if target_phoneme_counter_in_path in word_boundaries_indices:
                 alignments_by_word.append({
                     "target": target_path[word_start_idx_in_path : path_idx + 1],
                     "user": user_path[word_start_idx_in_path : path_idx + 1]
                 })
                 word_start_idx_in_path = path_idx + 1
-                current_word_boundary = next(word_boundary_iter, -1)
             target_phoneme_counter_in_path += 1
+            
     return alignments_by_word
 
-# -----------------------------------------------------------------------
-# 4.2. 格式化函數 (語言無關)
-# -----------------------------------------------------------------------
+# --- 6. 格式化函數 (與 en_us.py 的實現邏輯完全對齊) ---
 def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     """
-    將對齊結果格式化為最終的 JSON 結構。此函數是語言無關的。
+    將對齊結果格式化為最終的 JSON 結構。
+    (此函數實現與 en_us.py 完全相同，僅 G2P 語言設定不同)
     """
     total_phonemes, total_errors, correct_words_count = 0, 0, 0
     words_data = []
@@ -226,25 +199,24 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
         word_is_correct = True
         phonemes_data = []
         
-        # 增加一個健壯性檢查，以防對齊演算法返回長度不一的列表
-        min_len = min(len(alignment.get('target', [])), len(alignment.get('user', [])))
-        for j in range(min_len):
-            target_phoneme, user_phoneme = alignment['target'][j], alignment['user'][j]
+        for j in range(len(alignment['target'])):
+            target_phoneme = alignment['target'][j]
+            user_phoneme = alignment['user'][j]
             is_match = (user_phoneme == target_phoneme)
             phonemes_data.append({"target": target_phoneme, "user": user_phoneme, "isMatch": is_match})
             if not is_match:
                 word_is_correct = False
                 if not (user_phoneme == '-' and target_phoneme == '-'): total_errors += 1
         
-        if word_is_correct and min_len > 0: correct_words_count += 1
-        
+        if word_is_correct:
+            correct_words_count += 1
+            
         words_data.append({"word": original_words[i], "isCorrect": word_is_correct, "phonemes": phonemes_data})
-        total_phonemes += sum(1 for p in alignment.get('target', []) if p != '-')
+        total_phonemes += sum(1 for p in alignment['target'] if p != '-')
 
-    # 【Fuse Logic】處理使用者漏講了單詞的情況
     if len(alignments) < len(original_words):
         for i in range(len(alignments), len(original_words)):
-            # 【關鍵修改 4】確保這裡也使用 'pt-br'
+            # 【關鍵修改 6：確保此處的 G2P 語言和符號清理也保持一致】
             missed_word_ipa_str = phonemize(original_words[i], language='pt-br', backend='espeak', strip=True).replace('ː', '')
             missed_word_ipa = _tokenize_ipa(missed_word_ipa_str)
             phonemes_data = []
