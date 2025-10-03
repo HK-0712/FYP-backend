@@ -77,10 +77,10 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
     if not processor or not model:
         raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
 
+    # =========================================================================
+    #  第一步：執行您現有的、未經修改的完整分析流程
+    # =========================================================================
     target_ipa_by_word_str = phonemize(target_sentence, language='en-us', backend='espeak', with_stress=True, strip=True).split()
-    
-    # 【【【【【 關 鍵 修 改 在 這 裡 】】】】】
-    # 在切分前，移除所有重音和長音符號，以匹配 ASR 的輸出特性
     target_ipa_by_word = [
         _tokenize_ipa(word.replace('ˌ', '').replace('ˈ', '').replace('ː', ''))
         for word in target_ipa_by_word_str
@@ -99,11 +99,77 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
     with torch.no_grad():
         logits = model(input_values).logits
     predicted_ids = torch.argmax(logits, dim=-1)
+    
+    # 這是您原始程式碼的流程，我們先獲取不帶時間戳的辨識結果
     user_ipa_full = processor.decode(predicted_ids[0])
 
+    # 使用您原始的對齊函數
     word_alignments = _get_phoneme_alignments_by_word(user_ipa_full, target_ipa_by_word)
 
-    return _format_to_json_structure(word_alignments, target_sentence, target_words_original)
+    # 使用您原始的格式化函數，產生不含時間戳的初始結果
+    initial_result = _format_to_json_structure(word_alignments, target_sentence, target_words_original)
+
+
+    # =========================================================================
+    #  第二步：獲取帶時間戳的辨識結果，用於後續的「注入」
+    # =========================================================================
+    transcription_with_offsets = processor.batch_decode(
+        predicted_ids, 
+        output_char_offsets=True
+    )
+    
+    char_offsets = transcription_with_offsets.char_offsets[0]
+    
+    # 建立一個從辨識出的音素到其時間戳的映射字典
+    # 鍵是音素，值是時間戳物件列表（因為同一個音素可能出現多次）
+    phoneme_to_ts_map = {}
+    for offset in char_offsets:
+        phoneme = offset['char']
+        if phoneme not in phoneme_to_ts_map:
+            phoneme_to_ts_map[phoneme] = []
+        
+        phoneme_to_ts_map[phoneme].append({
+            "start_time": round(offset['start_offset'] * model.config.inputs_to_logits_ratio / 16000.0, 2),
+            "end_time": round(offset['end_offset'] * model.config.inputs_to_logits_ratio / 16000.0, 2)
+        })
+
+    # =========================================================================
+    #  第三步：將時間戳「注入」到初始結果中，完成最終輸出
+    # =========================================================================
+    # 複製映射字典，以便在遍歷時可以安全地從中移除已使用的時間戳
+    ts_map_copy = {k: v[:] for k, v in phoneme_to_ts_map.items()}
+
+    for word_data in initial_result["words"]:
+        word_start_time = None
+        word_end_time = None
+        
+        for phoneme_data in word_data["phonemes"]:
+            user_phoneme = phoneme_data["user"]
+            
+            # 預設時間戳為 null
+            phoneme_data["startTime"] = None
+            phoneme_data["endTime"] = None
+
+            # 如果使用者發音不是'-'，且在時間戳映射中能找到
+            if user_phoneme != '-' and user_phoneme in ts_map_copy and ts_map_copy[user_phoneme]:
+                # 取出並移除第一個可用的時間戳（先進先出）
+                ts = ts_map_copy[user_phoneme].pop(0)
+                
+                # 為音素注入時間戳
+                phoneme_data["startTime"] = ts["start_time"]
+                phoneme_data["endTime"] = ts["end_time"]
+                
+                # 更新單字的時間戳
+                if word_start_time is None:
+                    word_start_time = ts["start_time"]
+                word_end_time = ts["end_time"] # 不斷更新為最後一個音素的結束時間
+        
+        # 為單字注入時間戳
+        word_data["startTime"] = word_start_time
+        word_data["endTime"] = word_end_time
+
+    return initial_result
+
 
 
 # --- 4. 對齊函數 (與上一版相同) ---
