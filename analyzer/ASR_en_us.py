@@ -1,73 +1,60 @@
-# ASR_en_us.py (fixed & replace-with)
+# ASR_en_us.py
+
 import torch
 import soundfile as sf
 import librosa
+from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 import os
+from phonemizer import phonemize
 import numpy as np
 from datetime import datetime, timezone
 
-from phonemizer import phonemize
-from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
-
-# Optional: LM-assisted decoder (preferred for robust offsets)
-try:
-    from transformers import Wav2Vec2ProcessorWithLM
-    HAS_WITH_LM = True
-except Exception:
-    HAS_WITH_LM = False
-
-# ---------- Device ----------
+# 【【【【【 新增程式碼 #1：自動檢測可用設備 】】】】】
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"INFO: ASR_en_us.py is configured to use device: {DEVICE}")
+print(f"INFO: ASR_fr_fr.py is configured to use device: {DEVICE}")
 
-# ---------- Global & model ----------
+# --- 1. 全域設定與模型載入函數 (保持不變) ---
 MODEL_NAME = "MultiBridge/wav2vec-LnNor-IPA-ft"
+
 processor = None
-processor_lm = None
 model = None
 
 def load_model():
     """
-    載入模型與處理器：
-    - 先載標準 Processor + 模型
-    - 若可用，再載 LM Processor 以取得更穩定的 offsets
+    (方案 A) 讓 transformers 自動處理模型的下載、快取和加載。
+    它會自動使用 Dockerfile 中設定的 HF_HOME 環境變數。
     """
-    global processor, processor_lm, model
-
+    global processor, model
     if processor and model:
         print(f"模型 '{MODEL_NAME}' 已載入，跳過。")
         return True
 
     print(f"正在準備 ASR 模型 '{MODEL_NAME}'...")
+    print(f"Transformers 將自動在 HF_HOME 指定的快取中尋找或下載。")
     try:
+        # 直接使用模型的線上名稱調用 from_pretrained
+        # 這就是魔法發生的地方！
         processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
         model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
+        
         model.to(DEVICE)
-
-        if HAS_WITH_LM:
-            try:
-                processor_lm = Wav2Vec2ProcessorWithLM.from_pretrained(MODEL_NAME)
-                print("LM 解碼器載入成功：將優先使用 logits + LM 取得 offsets。")
-            except Exception as e:
-                processor_lm = None
-                print(f"LM 解碼器不可用（{e}），回退到標準解碼。")
-
         print(f"模型 '{MODEL_NAME}' 和處理器載入成功！")
         return True
     except Exception as e:
-        print(f"載入模型/處理器時發生錯誤: {e}")
+        print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
         raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
-# ---------- IPA multi-char handling ----------
+# --- 2. 智能 IPA 切分函數 (已更新) ---
+# 移除了包含 'ː' 的組合，因為我們將在源頭移除它
 MULTI_CHAR_PHONEMES = {
-    'tʃ', 'dʒ',                 # Affricates
-    'eɪ', 'aɪ', 'oʊ', 'aʊ', 'ɔɪ',  # Diphthongs
-    'ɪə', 'eə', 'ʊə', 'ər'      # R-controlled & others
+    'tʃ', 'dʒ', # 輔音 (Affricates)
+    'eɪ', 'aɪ', 'oʊ', 'aʊ', 'ɔɪ', # 雙元音 (Diphthongs)
+    'ɪə', 'eə', 'ʊə', 'ər' # R-controlled 和其他組合
 }
 
 def _tokenize_ipa(ipa_string: str) -> list:
     """
-    智能切分 IPA 字串為音素列表，處理多字元音素。
+    將 IPA 字串智能地切分為音素列表，能正確處理多字元音素。
     """
     phonemes = []
     i = 0
@@ -81,115 +68,66 @@ def _tokenize_ipa(ipa_string: str) -> list:
             i += 1
     return phonemes
 
-# ---------- Core analyze ----------
+# --- 3. 核心分析函數 (主入口) (已修改) ---
 def analyze(audio_file_path: str, target_sentence: str) -> dict:
     """
     接收音訊檔案路徑和目標句子，回傳詳細的發音分析字典。
-    修正：以 logits 取得 offsets，保留 CTC 時序；順序注入；多字元音素聚合；詞級時間回寫。
+    這是此模組的主要進入點。
     """
     if not processor or not model:
-        raise RuntimeError("模型尚未載入。請先呼叫 load_model()。")
+        raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
 
-    # 1) 目標 IPA 解析
-    target_ipa_by_word_str = phonemize(
-        target_sentence,
-        language='en-us',
-        backend='espeak',
-        with_stress=True,
-        strip=True
-    ).split()
-
-    # 去掉重音與長度符號
+    target_ipa_by_word_str = phonemize(target_sentence, language='en-us', backend='espeak', with_stress=True, strip=True).split()
+    
+    # 【【【【【 關 鍵 修 改 在 這 裡 】】】】】
+    # 在切分前，移除所有重音和長音符號，以匹配 ASR 的輸出特性
     target_ipa_by_word = [
         _tokenize_ipa(word.replace('ˌ', '').replace('ˈ', '').replace('ː', ''))
         for word in target_ipa_by_word_str
     ]
     target_words_original = target_sentence.split()
 
-    # 2) 讀取與重取樣
     try:
         speech, sample_rate = sf.read(audio_file_path)
         if sample_rate != 16000:
             speech = librosa.resample(y=speech, orig_sr=sample_rate, target_sr=16000)
-            sample_rate = 16000
     except Exception as e:
         raise IOError(f"讀取或處理音訊時發生錯誤: {e}")
-
-    # 3) 前處理 & 模型推論
-    inputs = processor(speech, sampling_rate=sample_rate, return_tensors="pt")
-    input_values = inputs.input_values.to(DEVICE)
-
+    
+    input_values = processor(speech, sampling_rate=16000, return_tensors="pt").input_values
+    input_values = input_values.to(DEVICE)
     with torch.no_grad():
         logits = model(input_values).logits
-        pred_ids = torch.argmax(logits, dim=-1)
+    predicted_ids = torch.argmax(logits, dim=-1)
+    user_ipa_full = processor.decode(predicted_ids[0])
 
-    # 使用者 IPA（不含時間戳） + 對齊
-    user_ipa_full = processor.decode(pred_ids[0])
     word_alignments = _get_phoneme_alignments_by_word(user_ipa_full, target_ipa_by_word)
-    result = _format_to_json_structure(word_alignments, target_sentence, target_words_original)
 
-    # 4) 取得 offsets（優先 logits+LM，否則回退）
-    char_offsets = None
-    if processor_lm is not None:
-        try:
-            lm_out = processor_lm.batch_decode(logits.cpu().numpy())
-            if hasattr(lm_out, "char_offsets") and lm_out.char_offsets:
-                char_offsets = lm_out.char_offsets[0]
-        except Exception as e:
-            print(f"LM 解碼 offsets 失敗，回退到標準。原因: {e}")
+    return _format_to_json_structure(word_alignments, target_sentence, target_words_original)
 
-    if char_offsets is None:
-        transcription_with_offsets = processor.batch_decode(
-            pred_ids,
-            output_char_offsets=True
-        )
-        char_offsets = transcription_with_offsets.char_offsets[0] if hasattr(transcription_with_offsets, "char_offsets") else []
 
-    # 5) offsets 轉秒並按順序注入
-    step_sec = (model.config.inputs_to_logits_ratio / float(sample_rate))  # 例如 320/16000=0.02s
-    ts_seq = []
-    for off in char_offsets:
-        s = round(off.get('start_offset', None) * step_sec, 3) if off.get('start_offset', None) is not None else None
-        e = round(off.get('end_offset', None) * step_sec, 3) if off.get('end_offset', None) is not None else None
-        ts_seq.append({
-            "char": off.get('char', ''),
-            "start": s,
-            "end": e
-        })
-
-    _inject_timestamps_in_order(result, ts_seq)
-
-    # 6) 補上分析時間戳
-    result["analysisTimestampUTC"] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S (UTC)')
-    return result
-
-# ---------- Alignment ----------
+# --- 4. 對齊函數 (與上一版相同) ---
 def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
-    使用新的切分邏輯執行音素對齊：輸出 by-word 的 user/target 對齊路徑。
+    (已修改) 使用新的切分邏輯執行音素對齊。
     """
     user_phonemes = _tokenize_ipa(user_phoneme_str)
+    
     target_phonemes_flat = []
-    word_boundaries_indices = []
+    word_boundaries_indices = [] 
     current_idx = 0
     for word_ipa_tokens in target_words_ipa_tokenized:
         target_phonemes_flat.extend(word_ipa_tokens)
         current_idx += len(word_ipa_tokens)
         word_boundaries_indices.append(current_idx - 1)
 
-    # DP for edit distance
     dp = np.zeros((len(user_phonemes) + 1, len(target_phonemes_flat) + 1))
     for i in range(1, len(user_phonemes) + 1): dp[i][0] = i
     for j in range(1, len(target_phonemes_flat) + 1): dp[0][j] = j
-
     for i in range(1, len(user_phonemes) + 1):
         for j in range(1, len(target_phonemes_flat) + 1):
             cost = 0 if user_phonemes[i-1] == target_phonemes_flat[j-1] else 1
-            dp[i][j] = min(
-                dp[i-1][j] + 1,
-                dp[i][j-1] + 1,
-                dp[i-1][j-1] + cost
-            )
+            dp[i][j] = min(dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + cost)
 
     i, j = len(user_phonemes), len(target_phonemes_flat)
     user_path, target_path = [], []
@@ -201,60 +139,73 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
             user_path.insert(0, user_phonemes[i-1]); target_path.insert(0, '-'); i -= 1
         else:
             user_path.insert(0, '-'); target_path.insert(0, target_phonemes_flat[j-1]); j -= 1
-
+    
     alignments_by_word = []
     word_start_idx_in_path = 0
     target_phoneme_counter_in_path = 0
+
     for path_idx, p in enumerate(target_path):
         if p != '-':
             if target_phoneme_counter_in_path in word_boundaries_indices:
                 target_alignment = target_path[word_start_idx_in_path : path_idx + 1]
-                user_alignment   = user_path[word_start_idx_in_path   : path_idx + 1]
+                user_alignment = user_path[word_start_idx_in_path : path_idx + 1]
+                
                 alignments_by_word.append({
                     "target": target_alignment,
                     "user": user_alignment
                 })
+                
                 word_start_idx_in_path = path_idx + 1
+            
             target_phoneme_counter_in_path += 1
+            
     return alignments_by_word
 
-# ---------- Formatting ----------
+# --- 5. 格式化函數 (與上一版相同) ---
 def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     total_phonemes = 0
     total_errors = 0
     correct_words_count = 0
     words_data = []
+
     num_words_to_process = min(len(alignments), len(original_words))
 
     for i in range(num_words_to_process):
         alignment = alignments[i]
         word_is_correct = True
         phonemes_data = []
+        
         for j in range(len(alignment['target'])):
             target_phoneme = alignment['target'][j]
             user_phoneme = alignment['user'][j]
             is_match = (user_phoneme == target_phoneme)
+            
             phonemes_data.append({
                 "target": target_phoneme,
                 "user": user_phoneme,
                 "isMatch": is_match
             })
+            
             if not is_match:
                 word_is_correct = False
                 if not (user_phoneme == '-' and target_phoneme == '-'):
                     total_errors += 1
+        
         if word_is_correct:
             correct_words_count += 1
+            
         words_data.append({
             "word": original_words[i],
             "isCorrect": word_is_correct,
             "phonemes": phonemes_data
         })
+        
         total_phonemes += sum(1 for p in alignment['target'] if p != '-')
 
     total_words = len(original_words)
     if len(alignments) < total_words:
         for i in range(len(alignments), total_words):
+            # 確保這裡也移除 'ː'
             missed_word_ipa_str = phonemize(original_words[i], language='en-us', backend='espeak', strip=True).replace('ː', '')
             missed_word_ipa = _tokenize_ipa(missed_word_ipa_str)
             phonemes_data = []
@@ -262,6 +213,7 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
                 phonemes_data.append({"target": p_ipa, "user": "-", "isMatch": False})
                 total_errors += 1
                 total_phonemes += 1
+
             words_data.append({
                 "word": original_words[i],
                 "isCorrect": False,
@@ -284,121 +236,5 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
         },
         "words": words_data
     }
+    
     return final_result
-
-# ---------- Timestamp injection (new core) ----------
-def _inject_timestamps_in_order(result_dict: dict, ts_seq: list):
-    """
-    以「順序」把時間戳注入到每個音素與詞：
-    - 不用字串鍵映射，避免同符號多次出現造成錯位
-    - 多字元 IPA 音素以相鄰 char 聚合其時間邊界
-    - 寫回詞級 start/end；做基本數學一致性檢查
-    """
-    # 依序消耗 char offsets
-    k = 0  # 指向 ts_seq
-    total_ts = len(ts_seq)
-
-    for word in result_dict["words"]:
-        word_start = None
-        word_end = None
-
-        for p in word["phonemes"]:
-            p_user = p.get("user", "-")
-            # 預設
-            p["startTime"] = None
-            p["endTime"] = None
-
-            if p_user == "-" or k >= total_ts:
-                continue
-
-            # 可能存在空白、分隔符等：跳過無效 char
-            while k < total_ts and (ts_seq[k]["char"] is None or ts_seq[k]["char"] == ""):
-                k += 1
-                if k >= total_ts:
-                    break
-            if k >= total_ts:
-                break
-
-            # 精確匹配：下一個 char 等於整個音素
-            if ts_seq[k]["char"] == p_user:
-                s = ts_seq[k]["start"]; e = ts_seq[k]["end"]
-                if _valid_ts_pair(s, e):
-                    p["startTime"] = s; p["endTime"] = e
-                    word_start = s if word_start is None else word_start
-                    word_end = e
-                k += 1
-                continue
-
-            # 多字元音素：嘗試聚合相鄰 char
-            if len(p_user) > 1:
-                agg_start = None
-                agg_end = None
-                consumed = 0
-                buffer = ""
-
-                while (k + consumed) < total_ts and len(buffer) < len(p_user):
-                    cur_char = ts_seq[k + consumed]["char"] or ""
-                    buffer += cur_char
-                    ts_s = ts_seq[k + consumed]["start"]
-                    ts_e = ts_seq[k + consumed]["end"]
-                    if ts_s is not None:
-                        agg_start = ts_s if agg_start is None else min(agg_start, ts_s)
-                    if ts_e is not None:
-                        agg_end = ts_e if agg_end is None else max(agg_end, ts_e)
-                    consumed += 1
-                    if buffer == p_user:
-                        if _valid_ts_pair(agg_start, agg_end):
-                            p["startTime"] = agg_start
-                            p["endTime"] = agg_end
-                            word_start = agg_start if word_start is None else word_start
-                            word_end = agg_end
-                        k += consumed
-                        break
-                # 若聚合失敗，不消耗 ts_seq，保留 None
-
-            # 單字元但不相等：避免錯位，不消耗 ts_seq；保留 None
-
-        # 詞級時間回寫（以該詞第一/最後一個有時間的音素為邊界）
-        word["startTime"] = word_start
-        word["endTime"] = word_end
-
-    # 事後基本檢查：全局時間單調 & 音素不重疊
-    _sanitize_monotonic_and_nonoverlap(result_dict)
-
-def _valid_ts_pair(s, e):
-    return (s is not None) and (e is not None) and (s <= e)
-
-def _sanitize_monotonic_and_nonoverlap(result_dict: dict):
-    """
-    保證列表中各音素時間不回退、不重疊（允許等邊界接觸），
-    並限制到非負與合理的浮點小數三位。
-    """
-    last_end = None
-    for w in result_dict.get("words", []):
-        w_start = None
-        w_end = None
-        for p in w.get("phonemes", []):
-            s = p.get("startTime", None)
-            e = p.get("endTime", None)
-            if s is None or e is None:
-                continue
-            # 不重疊：若 s < last_end，則把 s 夾到 last_end
-            if last_end is not None and s < last_end:
-                s = last_end
-            # 非負與單調
-            if s < 0:
-                s = 0.0
-            if e < s:
-                e = s
-            # 四捨五入到 3 位
-            p["startTime"] = round(float(s), 3)
-            p["endTime"] = round(float(e), 3)
-            last_end = p["endTime"]
-
-            # 詞級邊界更新
-            w_start = p["startTime"] if w_start is None else w_start
-            w_end = p["endTime"]
-
-        # 回寫詞級
-        w["startTime"] = w_start if w_start is not None else w.get("startTime", None)
-        w["endTime"] = w_end if w_end is not None else w.get("endTime", None)
