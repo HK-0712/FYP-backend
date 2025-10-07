@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 # 【【【【【 新增程式碼 #1：自動檢測可用設備 】】】】】
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"INFO: ASR_fr_fr.py is configured to use device: {DEVICE}")
+print(f"INFO: ASR_en_us.py is configured to use device: {DEVICE}")
 
 # --- 1. 全域設定與模型載入函數 (保持不變) ---
 MODEL_NAME = "MultiBridge/wav2vec-LnNor-IPA-ft"

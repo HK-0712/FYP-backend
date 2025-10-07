@@ -1,55 +1,28 @@
-# ASR_en_us_v2.py
+# ASR_en_us.py
 
 import torch
 import soundfile as sf
 import librosa
-# 【【【【【 修改 #1：從 transformers 匯入 AutoProcessor 和 AutoModelForCTC 】】】】】
-# 這是為了更好地適應 KoelLabs 模型推薦的用法，功能上與 Wav2Vec2Processor/ForCTC 相同，但更通用。
-from transformers import AutoProcessor, AutoModelForCTC
+from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 import os
 from phonemizer import phonemize
 import numpy as np
 from datetime import datetime, timezone
 
-# --- 全域設定 ---
-# 保持不變
+# 【【【【【 新增程式碼 #1：自動檢測可用設備 】】】】】
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-# 檔案名稱已更新，您可以自行修改
-print(f"INFO: ASR_en_us_koel_final.py is configured to use device: {DEVICE}")
+print(f"INFO: ASR_de_de.py is configured to use device: {DEVICE}")
 
-# 【【【【【 修改 #2：更新為最終選定的 KoelLabs 模型名稱 】】】】】
-MODEL_NAME = "KoelLabs/xlsr-english-01"
+# --- 1. 全域設定與模型載入函數 (保持不變) ---
+MODEL_NAME = "HK0712/Wav2Vec2_German_IPA"
 
 processor = None
 model = None
 
-# 【【【【【 新增程式碼 #1：為 KoelLabs 模型設計的 IPA 正規化器 】】】】】
-def normalize_koel_ipa(raw_phonemes: list) -> list:
-    """
-    將 KoelLabs 模型輸出的高級 IPA 序列，正規化為與 eSpeak 輸出可比的基礎 IPA 序列。
-    """
-    normalized_phonemes = []
-    for phoneme in raw_phonemes:
-        if not phoneme: # 跳過可能的空字串
-            continue
-            
-        # 1. 去掉送氣、鼻化、清音等附加符號
-        base_phoneme = phoneme.replace('ʰ', '').replace('̃', '').replace('̥', '')
-        
-        # 2. 處理極少數的外來音，將其映射到最接近的英語音
-        if base_phoneme == 'β':
-            base_phoneme = 'v'
-        elif base_phoneme in ['x', 'ɣ', 'ɦ']:
-            base_phoneme = 'h'
-        # 根據需要可以增加更多規則，但這已經涵蓋了絕大部分
-            
-        normalized_phonemes.append(base_phoneme)
-        
-    return normalized_phonemes
-
 def load_model():
     """
-    載入 KoelLabs 的 ASR 模型。
+    (方案 A) 讓 transformers 自動處理模型的下載、快取和加載。
+    它會自動使用 Dockerfile 中設定的 HF_HOME 環境變數。
     """
     global processor, model
     if processor and model:
@@ -57,10 +30,12 @@ def load_model():
         return True
 
     print(f"正在準備 ASR 模型 '{MODEL_NAME}'...")
+    print(f"Transformers 將自動在 HF_HOME 指定的快取中尋找或下載。")
     try:
-        # 【【【【【 修改 #3：使用 AutoProcessor 和 AutoModelForCTC 載入模型 】】】】】
-        processor = AutoProcessor.from_pretrained(MODEL_NAME)
-        model = AutoModelForCTC.from_pretrained(MODEL_NAME)
+        # 直接使用模型的線上名稱調用 from_pretrained
+        # 這就是魔法發生的地方！
+        processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
+        model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
         
         model.to(DEVICE)
         print(f"模型 '{MODEL_NAME}' 和處理器載入成功！")
@@ -69,11 +44,11 @@ def load_model():
         print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
         raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
-# --- 2. 智能 IPA 切分函數 (與您的原版邏輯完全相同) ---
+# --- 2. 智能 IPA 切分函數 (已更新) ---
+# 移除了包含 'ː' 的組合，因為我們將在源頭移除它
 MULTI_CHAR_PHONEMES = {
-    'tʃ', 'dʒ', # 輔音 (Affricates)
-    'eɪ', 'aɪ', 'oʊ', 'aʊ', 'ɔɪ', # 雙元音 (Diphthongs)
-    'ɪə', 'eə', 'ʊə', 'ər' # R-controlled 和其他組合
+    'aɪ', 'aʊ',
+    'dʒ', 'pf', 'ts', 'tʃ'
 }
 
 def _tokenize_ipa(ipa_string: str) -> list:
@@ -92,7 +67,7 @@ def _tokenize_ipa(ipa_string: str) -> list:
             i += 1
     return phonemes
 
-# --- 3. 核心分析函數 (主入口) (已修改以整合正規化器) ---
+# --- 3. 核心分析函數 (主入口) (已修改) ---
 def analyze(audio_file_path: str, target_sentence: str) -> dict:
     """
     接收音訊檔案路徑和目標句子，回傳詳細的發音分析字典。
@@ -101,17 +76,16 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
     if not processor or not model:
         raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
 
-    # 您的原始邏輯，保持不變
     target_ipa_by_word_str = phonemize(target_sentence, language='en-us', backend='espeak', with_stress=True, strip=True).split()
     
-    # 您的原始邏輯，保持不變
+    # 【【【【【 關 鍵 修 改 在 這 裡 】】】】】
+    # 在切分前，移除所有重音和長音符號，以匹配 ASR 的輸出特性
     target_ipa_by_word = [
         _tokenize_ipa(word.replace('ˌ', '').replace('ˈ', '').replace('ː', ''))
         for word in target_ipa_by_word_str
     ]
     target_words_original = target_sentence.split()
 
-    # 您的原始邏輯，保持不變
     try:
         speech, sample_rate = sf.read(audio_file_path)
         if sample_rate != 16000:
@@ -119,31 +93,19 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
     except Exception as e:
         raise IOError(f"讀取或處理音訊時發生錯誤: {e}")
     
-    # 您的原始邏輯，保持不變
     input_values = processor(speech, sampling_rate=16000, return_tensors="pt").input_values
     input_values = input_values.to(DEVICE)
     with torch.no_grad():
         logits = model(input_values).logits
     predicted_ids = torch.argmax(logits, dim=-1)
-    
-    # 【【【【【 修改 #4：在此處插入正規化步驟 】】】】】
-    # 1. 解碼得到原始的、帶有高級 IPA 的序列
-    raw_user_ipa_str = processor.decode(predicted_ids[0])
-    raw_user_phonemes = raw_user_ipa_str.split(' ')
+    user_ipa_full = processor.decode(predicted_ids[0])
 
-    # 2. 調用新的正規化函式進行清理
-    normalized_user_phonemes = normalize_koel_ipa(raw_user_phonemes)
-    
-    # 3. 將清理後的音素列表重新組合成字串，以適應後續的 _tokenize_ipa 函式
-    user_ipa_full = "".join(normalized_user_phonemes)
-
-    # 後續所有邏輯都與您的原版完全相同
     word_alignments = _get_phoneme_alignments_by_word(user_ipa_full, target_ipa_by_word)
 
     return _format_to_json_structure(word_alignments, target_sentence, target_words_original)
 
 
-# --- 4. 對齊函數 (與您的原版邏輯完全相同) ---
+# --- 4. 對齊函數 (與上一版相同) ---
 def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
     (已修改) 使用新的切分邏輯執行音素對齊。
@@ -198,7 +160,7 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
             
     return alignments_by_word
 
-# --- 5. 格式化函數 (與您的原版邏輯完全相同) ---
+# --- 5. 格式化函數 (與上一版相同) ---
 def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     total_phonemes = 0
     total_errors = 0
@@ -242,7 +204,7 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     total_words = len(original_words)
     if len(alignments) < total_words:
         for i in range(len(alignments), total_words):
-            # 您的原始邏輯，保持不變
+            # 確保這裡也移除 'ː'
             missed_word_ipa_str = phonemize(original_words[i], language='en-us', backend='espeak', strip=True).replace('ː', '')
             missed_word_ipa = _tokenize_ipa(missed_word_ipa_str)
             phonemes_data = []
