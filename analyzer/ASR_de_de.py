@@ -76,7 +76,7 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
     if not processor or not model:
         raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
 
-    target_ipa_by_word_str = phonemize(target_sentence, language='en-us', backend='espeak', with_stress=True, strip=True).split()
+    target_ipa_by_word_str = phonemize(target_sentence, language='de-de', backend='espeak', with_stress=True, strip=True).split()
     
     # 【【【【【 關 鍵 修 改 在 這 裡 】】】】】
     # 在切分前，移除所有重音和長音符號，以匹配 ASR 的輸出特性
@@ -205,7 +205,7 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     if len(alignments) < total_words:
         for i in range(len(alignments), total_words):
             # 確保這裡也移除 'ː'
-            missed_word_ipa_str = phonemize(original_words[i], language='en-us', backend='espeak', strip=True).replace('ː', '')
+            missed_word_ipa_str = phonemize(original_words[i], language='de-de', backend='espeak', strip=True).replace('ː', '')
             missed_word_ipa = _tokenize_ipa(missed_word_ipa_str)
             phonemes_data = []
             for p_ipa in missed_word_ipa:
