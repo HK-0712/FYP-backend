@@ -20,40 +20,17 @@ import unicodedata # 【保留】這是處理多語言音素的更優方案
 import re # 【保留】用於更準確地切分單詞
 
 # --- 2. 全域設定與模型載入 ---
+#    【已修改】移除了全域的 processor 和 model 變數。
+#    【已修改】刪除了舊的 load_model() 函數。
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"INFO: ASR_nl_nl.py is configured to use device: {DEVICE}")
 
 # 【關鍵修改 1：設定為荷蘭語 ASR 模型】
 MODEL_NAME = "Clementapa/wav2vec2-base-960h-phoneme-reco-dutch"
 
-processor = None
-model = None
-
-def load_model():
-    """
-    載入荷蘭語 ASR 模型和對應的處理器。
-    (此函數邏輯與 en_us.py 完全相同)
-    """
-    global processor, model
-    if processor and model:
-        print(f"模型 '{MODEL_NAME}' 已載入，跳過。")
-        return True
-
-    print(f"正在準備 ASR 模型 '{MODEL_NAME}'...")
-    try:
-        processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-        model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
-        model.to(DEVICE)
-        print(f"模型 '{MODEL_NAME}' 和處理器載入成功！")
-        return True
-    except Exception as e:
-        print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
-        raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
-
 # --- 3. 智能 IPA 切分函數 ---
 # 【關鍵修改 2：保留更優越的通用切分邏輯】
-# 雖然此函數的實現比英文版的更複雜，但它更健壯且適用於包括荷蘭語在內的多種語言。
-# 這是為了「fit with Dutch」而必須保留的優化。
+# 【保持不變】
 def _tokenize_ipa(ipa_string: str) -> list:
     """
     將 IPA 字串智能地切分為音素列表，能正確處理帶有附加符號的組合字符。
@@ -64,7 +41,6 @@ def _tokenize_ipa(ipa_string: str) -> list:
     while i < len(s):
         current_char = s[i]
         i += 1
-        # 檢查並組合後續的非間距標記 (例如變音符)
         while i < len(s) and unicodedata.category(s[i]) == 'Mn':
             current_char += s[i]
             i += 1
@@ -72,16 +48,31 @@ def _tokenize_ipa(ipa_string: str) -> list:
     return phonemes
 
 # --- 4. 核心分析函數 (主入口) ---
-def analyze(audio_file_path: str, target_sentence: str) -> dict:
+#    【已修改】將模型載入和快取邏輯合併至此。
+def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dict:
     """
     接收音訊檔案路徑和目標荷蘭語句子，回傳詳細的發音分析字典。
-    (此函數結構與 en_us.py 完全對齊)
+    模型會被載入並儲存在此函數獨立的 'cache' 中，實現狀態隔離。
     """
-    if not processor or not model:
-        raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
+    # 檢查快取中是否已有模型，如果沒有則載入
+    if "model" not in cache:
+        print(f"快取未命中 (ASR_nl_nl)。正在載入模型 '{MODEL_NAME}'...")
+        try:
+            # 載入模型並存入此函數的快取字典
+            cache["processor"] = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
+            cache["model"] = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
+            cache["model"].to(DEVICE)
+            print(f"模型 '{MODEL_NAME}' 已載入並快取。")
+        except Exception as e:
+            print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
+            raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
+    # 從此函數的獨立快取中獲取模型和處理器
+    processor = cache["processor"]
+    model = cache["model"]
+
+    # --- 以下為原始分析邏輯，保持不變 ---
     # 1. 準備目標音素 (G2P)
-    # 使用正則表達式準確切分單詞，這比簡單的 .split() 更穩健
     target_words_original = re.findall(r"[\w'-]+", target_sentence)
     cleaned_sentence = " ".join(target_words_original)
 
@@ -94,7 +85,6 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
         strip=True
     ).split()
     
-    # 健壯性檢查：確保單詞和音素列表長度一致
     if len(target_words_original) != len(target_ipa_by_word_str):
         print(f"警告: G2P 後單詞數量 ({len(target_ipa_by_word_str)}) 與原始單詞數量 ({len(target_words_original)}) 不匹配。將進行截斷。")
         min_len = min(len(target_words_original), len(target_ipa_by_word_str))
@@ -122,7 +112,6 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
     predicted_ids = torch.argmax(logits, dim=-1)
     
     # 【關鍵修改 5：與 en_us.py 對齊，假設模型輸出是乾淨的，或在必要時清理】
-    # 移除模型可能產生的分隔符 |，並確保也移除長音符號，以匹配目標音素的處理方式
     user_ipa_full = processor.decode(predicted_ids[0]).replace('|', '').replace('ː', '')
 
     # 3. 執行對齊並格式化輸出
@@ -131,6 +120,7 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
 
 
 # --- 5. 對齊函數 (與 en_us.py 的實現邏輯完全對齊) ---
+# 【保持不變】
 def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
     使用動態規劃執行音素對齊。
@@ -157,16 +147,12 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
     i, j = len(user_phonemes), len(target_phonemes_flat)
     user_path, target_path = [], []
     while i > 0 or j > 0:
-        # 使用與 en_us.py 相同的、更簡潔的回溯邏輯
         cost = float('inf') if i == 0 or j == 0 else (0 if user_phonemes[i-1] == target_phonemes_flat[j-1] else 1)
         
-        # 優先匹配/替換
         if i > 0 and j > 0 and dp[i][j] == dp[i-1][j-1] + cost:
             user_path.insert(0, user_phonemes[i-1]); target_path.insert(0, target_phonemes_flat[j-1]); i -= 1; j -= 1
-        # 其次是刪除 (user 多)
         elif i > 0 and dp[i][j] == dp[i-1][j] + 1:
             user_path.insert(0, user_phonemes[i-1]); target_path.insert(0, '-'); i -= 1
-        # 最後是插入 (target 多)
         else:
             user_path.insert(0, '-'); target_path.insert(0, target_phonemes_flat[j-1]); j -= 1
     
@@ -192,6 +178,7 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
     return alignments_by_word
 
 # --- 6. 格式化函數 (與 en_us.py 的實現邏輯完全對齊) ---
+# 【保持不變】
 def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     """
     將對齊結果格式化為最終的 JSON 結構。
@@ -222,7 +209,6 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
             
             if not is_match:
                 word_is_correct = False
-                # 只有在不是「目標和用戶都為空」的情況下才計為錯誤
                 if not (user_phoneme == '-' and target_phoneme == '-'):
                     total_errors += 1
         
@@ -237,7 +223,6 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
         
         total_phonemes += sum(1 for p in alignment['target'] if p != '-')
 
-    # 處理使用者漏講單詞的情況
     if len(alignments) < len(original_words):
         for i in range(len(alignments), len(original_words)):
             # 【關鍵修改 6：確保此處的 G2P 語言和符號清理也保持一致】

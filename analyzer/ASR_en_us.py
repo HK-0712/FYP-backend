@@ -1,5 +1,3 @@
-# ASR_en_us.py
-
 import torch
 import soundfile as sf
 import librosa
@@ -9,43 +7,13 @@ from phonemizer import phonemize
 import numpy as np
 from datetime import datetime, timezone
 
-# 【【【【【 新增程式碼 #1：自動檢測可用設備 】】】】】
+# --- 1. 全域設定 (已修改) ---
+# 移除了全域的 processor 和 model 變數，只保留常數。
+MODEL_NAME = "MultiBridge/wav2vec-LnNor-IPA-ft"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"INFO: ASR_en_us.py is configured to use device: {DEVICE}")
 
-# --- 1. 全域設定與模型載入函數 (保持不變) ---
-MODEL_NAME = "MultiBridge/wav2vec-LnNor-IPA-ft"
-
-processor = None
-model = None
-
-def load_model():
-    """
-    (方案 A) 讓 transformers 自動處理模型的下載、快取和加載。
-    它會自動使用 Dockerfile 中設定的 HF_HOME 環境變數。
-    """
-    global processor, model
-    if processor and model:
-        print(f"模型 '{MODEL_NAME}' 已載入，跳過。")
-        return True
-
-    print(f"正在準備 ASR 模型 '{MODEL_NAME}'...")
-    print(f"Transformers 將自動在 HF_HOME 指定的快取中尋找或下載。")
-    try:
-        # 直接使用模型的線上名稱調用 from_pretrained
-        # 這就是魔法發生的地方！
-        processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-        model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
-        
-        model.to(DEVICE)
-        print(f"模型 '{MODEL_NAME}' 和處理器載入成功！")
-        return True
-    except Exception as e:
-        print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
-        raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
-
-# --- 2. 智能 IPA 切分函數 (已更新) ---
-# 移除了包含 'ː' 的組合，因為我們將在源頭移除它
+# --- 2. 智能 IPA 切分函數 (保持不變) ---
 MULTI_CHAR_PHONEMES = {
     'tʃ', 'dʒ', # 輔音 (Affricates)
     'eɪ', 'aɪ', 'oʊ', 'aʊ', 'ɔɪ', # 雙元音 (Diphthongs)
@@ -69,18 +37,32 @@ def _tokenize_ipa(ipa_string: str) -> list:
     return phonemes
 
 # --- 3. 核心分析函數 (主入口) (已修改) ---
-def analyze(audio_file_path: str, target_sentence: str) -> dict:
+# 刪除了舊的 load_model() 函數，並將其邏輯合併至此。
+def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dict:
     """
     接收音訊檔案路徑和目標句子，回傳詳細的發音分析字典。
-    這是此模組的主要進入點。
+    模型會被載入並儲存在此函數獨立的 'cache' 中，實現狀態隔離。
     """
-    if not processor or not model:
-        raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
+    # 檢查快取中是否已有模型，如果沒有則載入
+    if "model" not in cache:
+        print(f"快取未命中 (ASR_en_us)。正在載入模型 '{MODEL_NAME}'...")
+        try:
+            # 載入模型並存入此函數的快取字典
+            cache["processor"] = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
+            cache["model"] = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
+            cache["model"].to(DEVICE)
+            print(f"模型 '{MODEL_NAME}' 已載入並快取。")
+        except Exception as e:
+            print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
+            raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
+    # 從此函數的獨立快取中獲取模型和處理器
+    processor = cache["processor"]
+    model = cache["model"]
+
+    # --- 以下為原始分析邏輯，保持不變 ---
     target_ipa_by_word_str = phonemize(target_sentence, language='en-us', backend='espeak', with_stress=True, strip=True).split()
     
-    # 【【【【【 關 鍵 修 改 在 這 裡 】】】】】
-    # 在切分前，移除所有重音和長音符號，以匹配 ASR 的輸出特性
     target_ipa_by_word = [
         _tokenize_ipa(word.replace('ˌ', '').replace('ˈ', '').replace('ː', ''))
         for word in target_ipa_by_word_str
@@ -106,7 +88,7 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
     return _format_to_json_structure(word_alignments, target_sentence, target_words_original)
 
 
-# --- 4. 對齊函數 (與上一版相同) ---
+# --- 4. 對齊函數 (保持不變) ---
 def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
     (已修改) 使用新的切分邏輯執行音素對齊。
@@ -161,7 +143,7 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
             
     return alignments_by_word
 
-# --- 5. 格式化函數 (與上一版相同) ---
+# --- 5. 格式化函數 (保持不變) ---
 def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     total_phonemes = 0
     total_errors = 0
@@ -205,7 +187,6 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     total_words = len(original_words)
     if len(alignments) < total_words:
         for i in range(len(alignments), total_words):
-            # 確保這裡也移除 'ː'
             missed_word_ipa_str = phonemize(original_words[i], language='en-us', backend='espeak', strip=True).replace('ː', '')
             missed_word_ipa = _tokenize_ipa(missed_word_ipa_str)
             phonemes_data = []

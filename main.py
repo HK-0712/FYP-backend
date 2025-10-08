@@ -77,7 +77,6 @@ async def lifespan(app: FastAPI):
             try:
                 print(f"--- Loading model for language: {lang} ---")
                 analyzer_module = importlib.import_module(f"analyzer.ASR_{lang}")
-                analyzer_module.load_model()
                 ANALYZERS[lang] = analyzer_module
                 print(f"--- Model for {lang} loaded successfully. ---")
             except Exception as e:
@@ -127,7 +126,6 @@ def get_analyzer_module(language: str):
     print(f"'{language}' not in cache. Loading on-demand (development mode)...")
     try:
         analyzer_module = importlib.import_module(f"analyzer.ASR_{language}")
-        analyzer_module.load_model()
         ANALYZERS[language] = analyzer_module
         print(f"'{language}' analyzer loaded and cached successfully.")
         return analyzer_module

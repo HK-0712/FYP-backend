@@ -1,5 +1,3 @@
-# ASR_jp_jp.py
-
 # =======================================================================
 # 1. 匯入區 (Imports)
 #    - 新增了 pyopenjtalk 和 MeCab
@@ -17,6 +15,7 @@ import re
 
 # =======================================================================
 # 2. 全域變數與配置區 (Global Variables & Config)
+#    【已修改】移除了全域的 processor 和 model 變數。
 # =======================================================================
 # 自動檢測可用設備
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -24,9 +23,6 @@ print(f"INFO: ASR_jp_jp.py is configured to use device: {DEVICE}")
 
 # 設定為日語 ASR 模型
 MODEL_NAME = "prj-beatrice/japanese-hubert-base-phoneme-ctc-v3"
-
-processor = None
-model = None
 
 # 初始化 MeCab 分詞器
 # -Owakati 選項能直接輸出以空格分隔的單詞，非常方便
@@ -42,30 +38,12 @@ except RuntimeError:
 
 # -----------------------------------------------------------------------
 # 3.1. 模型載入函數
-#      - 將 Wav2Vec2ForCTC 更換為 HubertForCTC
+#      【已刪除】舊的 load_model() 函數已被移除。
 # -----------------------------------------------------------------------
-def load_model():
-    """
-    載入日語 ASR 模型 (HubertForCTC) 和對應的處理器。
-    """
-    global processor, model
-    if processor and model:
-        print(f"模型 '{MODEL_NAME}' 已載入，跳過。")
-        return True
-
-    print(f"正在準備 ASR 模型 '{MODEL_NAME}'...")
-    try:
-        processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-        model = HubertForCTC.from_pretrained(MODEL_NAME) # <-- 使用 HubertForCTC
-        model.to(DEVICE)
-        print(f"模型 '{MODEL_NAME}' 和處理器載入成功！")
-        return True
-    except Exception as e:
-        print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
-        raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
 # -----------------------------------------------------------------------
 # 3.2. 日語 G2P 輔助函數 (此檔案最核心的修改)
+#      【保持不變】
 # -----------------------------------------------------------------------
 def _get_target_phonemes_by_word(text: str) -> tuple[list[str], list[list[str]]]:
     if not mecab_tagger:
@@ -82,8 +60,6 @@ def _get_target_phonemes_by_word(text: str) -> tuple[list[str], list[list[str]]]
         
         phonemes_str = pyopenjtalk.g2p(word, kana=False)
         
-        # 【最終修正】完全不清理任何音素，直接使用原始輸出
-        # 只做基本的空格標準化
         cleaned_phonemes = re.sub(r'\s+', ' ', phonemes_str).strip()
         
         phoneme_list = cleaned_phonemes.split()
@@ -96,6 +72,7 @@ def _get_target_phonemes_by_word(text: str) -> tuple[list[str], list[list[str]]]
 
 # -----------------------------------------------------------------------
 # 3.3. 音素切分函數 (用於處理 ASR 的輸出)
+#      【保持不變】
 # -----------------------------------------------------------------------
 def _tokenize_asr_output(phoneme_string: str) -> list:
     """
@@ -106,26 +83,40 @@ def _tokenize_asr_output(phoneme_string: str) -> list:
 
 # -----------------------------------------------------------------------
 # 3.4. 核心分析函數 (主入口)
+#      【已修改】將模型載入和快取邏輯合併至此。
 # -----------------------------------------------------------------------
-def analyze(audio_file_path: str, target_sentence: str) -> dict:
+def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dict:
     """
     接收音訊檔案路徑和目標日語句子，回傳詳細的發音分析字典。
+    模型會被載入並儲存在此函數獨立的 'cache' 中，實現狀態隔離。
     """
-    if not processor or not model:
-        raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
+    # 檢查快取中是否已有模型，如果沒有則載入
+    if "model" not in cache:
+        print(f"快取未命中 (ASR_jp_jp)。正在載入模型 '{MODEL_NAME}'...")
+        try:
+            # 載入模型並存入此函數的快取字典
+            cache["processor"] = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
+            cache["model"] = HubertForCTC.from_pretrained(MODEL_NAME) # <-- 使用 HubertForCTC
+            cache["model"].to(DEVICE)
+            print(f"模型 '{MODEL_NAME}' 已載入並快取。")
+        except Exception as e:
+            print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
+            raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
+
+    # 從此函數的獨立快取中獲取模型和處理器
+    processor = cache["processor"]
+    model = cache["model"]
+
+    # --- 以下為原始分析邏輯，保持不變 ---
 
     # 【關鍵步驟 1: G2P】
-    # 使用新的 G2P 函數獲取目標單詞和音素
     target_words_original, target_ipa_by_word = _get_target_phonemes_by_word(target_sentence)
 
-    # 處理音訊檔案為空或句子為空的邊界情況
     if not target_words_original:
         print("警告: G2P 處理後目標句子為空。")
-        # 建立一個空的骨架結構返回
         return _format_to_json_structure([], target_sentence, [])
 
     # 【關鍵步驟 2: ASR】
-    # 載入並處理音訊
     try:
         speech, sample_rate = sf.read(audio_file_path)
         if len(speech) == 0:
@@ -135,7 +126,6 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
             if sample_rate != 16000:
                 speech = librosa.resample(y=speech, orig_sr=sample_rate, target_sr=16000)
             
-            # 進行 ASR 推論
             input_values = processor(speech, sampling_rate=16000, return_tensors="pt").input_values
             input_values = input_values.to(DEVICE)
             with torch.no_grad():
@@ -147,50 +137,34 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
         raise IOError(f"讀取或處理音訊時發生錯誤: {e}")
     
     # 【關鍵步驟 3: 對齊】
-    # 執行音素對齊
     word_alignments = _get_phoneme_alignments_by_word(user_ipa_full, target_ipa_by_word)
 
     # 【關鍵步驟 4: 格式化】
-    # 格式化為最終的 JSON 輸出
     return _format_to_json_structure(word_alignments, target_sentence, target_words_original)
 
 # =======================================================================
 # 4. 對齊與格式化函數區 (Alignment & Formatting)
-#    【注意】這些函數是語言無關的，直接從 en_us/fr_fr 版本複製而來。
+#    【保持不變】
 # =======================================================================
 
 # -----------------------------------------------------------------------
 # 4.1. 對齊函數 (語言無關)
 # -----------------------------------------------------------------------
-# 【【【【【 最終的、決定性的日文版邏輯修正 】】】】】
 def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
     使用動態規劃執行音素對齊。此函數是語言無關的。
     """
-    # 【【【【【 關鍵修改 】】】】】
-    # 舊的錯誤做法：user_phonemes = user_phoneme_str.split()
-    # 這只會得到 ['a', 'sh', 'i', 't', 'a'] 這樣的列表。
-    
-    # 新的正確做法：
-    # 1. 先按空格分割成 "音素單詞"。
-    # 2. 再將每個 "音素單詞" 徹底地展開成單個音素字元。
-    # 例如，"a sh i t a" -> ['a', 'sh', 'i', 't', 'a'] -> ['a', 's', 'h', 'i', 't', 'a']
-    # 這與英文版的 _tokenize_ipa() 達成了相同的效果：在對齊前就切分到最小單元。
     user_phonemes = [char for word in user_phoneme_str.split() for char in word]
 
-    # --- 後續的對齊邏輯完全保持不變 ---
-    
     target_phonemes_flat = []
     word_boundaries_indices = [] 
     current_idx = 0
     for word_ipa_tokens in target_words_ipa_tokenized:
-        # 對於 target，我們也需要確保它是最小單元
         flat_tokens = [char for word in word_ipa_tokens for char in word]
         target_phonemes_flat.extend(flat_tokens)
         current_idx += len(flat_tokens)
         word_boundaries_indices.append(current_idx - 1)
 
-    # 如果目標音素為空，返回空對齊
     if not target_phonemes_flat:
         return []
 
@@ -261,7 +235,6 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
         word_is_correct = True
         phonemes_data = []
         
-        # 確保 alignment['target'] 和 alignment['user'] 長度相同
         min_len = min(len(alignment['target']), len(alignment['user']))
         for j in range(min_len):
             target_phoneme = alignment['target'][j]
@@ -276,7 +249,6 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
             
             if not is_match:
                 word_is_correct = False
-                # 只有在 target 和 user 不都為 '-' 時才算作錯誤
                 if not (user_phoneme == '-' and target_phoneme == '-'):
                     total_errors += 1
         
@@ -291,14 +263,12 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
         
         total_phonemes += sum(1 for p in alignment['target'] if p != '-')
 
-    # 【Fuse Logic】處理 ASR 結果比目標單詞少的情況 (使用者漏講了單詞)
     if len(alignments) < len(original_words):
         for i in range(len(alignments), len(original_words)):
-            # 重新獲取漏掉單詞的音素
             _, missed_word_ipa_list = _get_target_phonemes_by_word(original_words[i])
             
             phonemes_data = []
-            if missed_word_ipa_list: # 確保列表不是空的
+            if missed_word_ipa_list:
                 for p_ipa in missed_word_ipa_list[0]:
                     phonemes_data.append({"target": p_ipa, "user": "-", "isMatch": False})
                     total_errors += 1

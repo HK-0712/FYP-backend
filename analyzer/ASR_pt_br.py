@@ -20,40 +20,17 @@ import unicodedata # 【保留】這是處理葡萄牙語鼻音等音素的更�
 import re # 【保留】用於更準確地切分單詞
 
 # --- 2. 全域設定與模型載入 ---
+#    【已修改】移除了全域的 processor 和 model 變數。
+#    【已修改】刪除了舊的 load_model() 函數。
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"INFO: ASR_pt_br.py is configured to use device: {DEVICE}")
 
 # 【關鍵修改 1：設定為葡萄牙語 ASR 模型】
 MODEL_NAME = "caiocrocha/wav2vec2-large-xlsr-53-phoneme-portuguese"
 
-processor = None
-model = None
-
-def load_model():
-    """
-    載入葡萄牙語 ASR 模型和對應的處理器。
-    (此函數邏輯與 en_us.py 完全相同)
-    """
-    global processor, model
-    if processor and model:
-        print(f"模型 '{MODEL_NAME}' 已載入，跳過。")
-        return True
-
-    print(f"正在準備 ASR 模型 '{MODEL_NAME}'...")
-    try:
-        processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-        model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
-        model.to(DEVICE)
-        print(f"模型 '{MODEL_NAME}' 和處理器載入成功！")
-        return True
-    except Exception as e:
-        print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
-        raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
-
 # --- 3. 智能 IPA 切分函數 ---
 # 【關鍵修改 2：保留更優越的通用切分邏輯】
-# 為了正確處理葡萄牙語的鼻化元音 (如 ɐ̃) 和塞擦音 (如 dʒ)，
-# 必須保留這個比英文版更強大的切分函數。
+# 【保持不變】
 def _tokenize_ipa(ipa_string: str) -> list:
     """
     將 IPA 字串智能地切分為音素列表，能正確處理帶有附加符號的組合字符。
@@ -62,13 +39,11 @@ def _tokenize_ipa(ipa_string: str) -> list:
     s = ipa_string.replace(' ', '')
     i = 0
     while i < len(s):
-        # 優先處理葡萄牙語中常見的雙字符塞擦音
         if i + 1 < len(s) and s[i:i+2] in {'dʒ', 'tʃ'}:
             phonemes.append(s[i:i+2])
             i += 2
             continue
 
-        # 處理基礎字符及其後續的非間距標記 (例如鼻化符 ~)
         current_char = s[i]
         i += 1
         while i < len(s) and unicodedata.category(s[i]) == 'Mn':
@@ -78,14 +53,30 @@ def _tokenize_ipa(ipa_string: str) -> list:
     return phonemes
 
 # --- 4. 核心分析函數 (主入口) ---
-def analyze(audio_file_path: str, target_sentence: str) -> dict:
+#    【已修改】將模型載入和快取邏輯合併至此。
+def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dict:
     """
     接收音訊檔案路徑和目標葡萄牙語句子，回傳詳細的發音分析字典。
-    (此函數結構與 en_us.py 完全對齊)
+    模型會被載入並儲存在此函數獨立的 'cache' 中，實現狀態隔離。
     """
-    if not processor or not model:
-        raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
+    # 檢查快取中是否已有模型，如果沒有則載入
+    if "model" not in cache:
+        print(f"快取未命中 (ASR_pt_br)。正在載入模型 '{MODEL_NAME}'...")
+        try:
+            # 載入模型並存入此函數的快取字典
+            cache["processor"] = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
+            cache["model"] = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
+            cache["model"].to(DEVICE)
+            print(f"模型 '{MODEL_NAME}' 已載入並快取。")
+        except Exception as e:
+            print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
+            raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
+    # 從此函數的獨立快取中獲取模型和處理器
+    processor = cache["processor"]
+    model = cache["model"]
+
+    # --- 以下為原始分析邏輯，保持不變 ---
     # 1. 準備目標音素 (G2P)
     target_words_original = re.findall(r"[\w'-]+", target_sentence)
     cleaned_sentence = " ".join(target_words_original)
@@ -134,6 +125,7 @@ def analyze(audio_file_path: str, target_sentence: str) -> dict:
 
 
 # --- 5. 對齊函數 (與 en_us.py 的實現邏輯完全對齊) ---
+# 【保持不變】
 def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
     使用動態規劃執行音素對齊。
@@ -185,6 +177,7 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
     return alignments_by_word
 
 # --- 6. 格式化函數 (與 en_us.py 的實現邏輯完全對齊) ---
+# 【保持不變】
 def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     """
     將對齊結果格式化為最終的 JSON 結構。

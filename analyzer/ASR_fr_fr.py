@@ -1,5 +1,3 @@
-# ASR_fr_fr.py
-
 import torch
 import soundfile as sf
 import librosa
@@ -17,86 +15,66 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"INFO: ASR_fr_fr.py is configured to use device: {DEVICE}")
 
 # --- 1. 全域設定與模型載入函數 (已修改為法語模型) ---
+# 移除了全域的 processor 和 model 變數，只保留常數。
+# 刪除了舊的 load_model() 函數。
 MODEL_NAME = "Cnam-LMSSC/wav2vec2-french-phonemizer"
-
-processor = None
-model = None
-
-def load_model():
-    """
-    (方案 A) 讓 transformers 自動處理模型的下載、快取和加載。
-    它會自動使用 Dockerfile 中設定的 HF_HOME 環境變數。
-    """
-    global processor, model
-    if processor and model:
-        print(f"模型 '{MODEL_NAME}' 已載入，跳過。")
-        return True
-
-    print(f"正在準備 ASR 模型 '{MODEL_NAME}'...")
-    print(f"Transformers 將自動在 HF_HOME 指定的快取中尋找或下載。")
-    try:
-        # 直接使用模型的線上名稱調用 from_pretrained
-        # 這就是魔法發生的地方！
-        processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-        model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
-        
-        model.to(DEVICE)
-        print(f"模型 '{MODEL_NAME}' 和處理器載入成功！")
-        return True
-    except Exception as e:
-        print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
-        raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
 def _tokenize_unicode_ipa(ipa_string: str) -> list:
     """
     智能地切分包含 Unicode 組合字元的 IPA 字串。
     """
     phonemes = []
-    # 移除所有空格
     s = ipa_string.replace(' ', '')
     
     i = 0
     while i < len(s):
-        # 獲取當前字元
         current_char = s[i]
         i += 1
-        # 檢查後續是否有連續的組合字元
-        while i < len(s) and unicodedata.category(s[i]) == 'Mn': # 'Mn' 代表非間距標記 (Non-Spacing Mark)
+        while i < len(s) and unicodedata.category(s[i]) == 'Mn':
             current_char += s[i]
             i += 1
         phonemes.append(current_char)
     return phonemes
 
 # --- 2. 核心分析函數 (主入口) (已修改為法語邏輯) ---
-def analyze(audio_file_path: str, target_sentence: str) -> dict:
+# 將模型載入和快取邏輯合併至此。
+def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dict:
     """
     接收音訊檔案路徑和目標句子，回傳詳細的發音分析字典。
-    這是此模組的主要進入點。
+    模型會被載入並儲存在此函數獨立的 'cache' 中，實現狀態隔離。
     """
-    if not processor or not model:
-        raise RuntimeError("模型尚未載入。請確保在呼叫 analyze 之前已成功執行 load_model()。")
+    # 檢查快取中是否已有模型，如果沒有則載入
+    if "model" not in cache:
+        print(f"快取未命中 (ASR_fr_fr)。正在載入模型 '{MODEL_NAME}'...")
+        try:
+            # 載入模型並存入此函數的快取字典
+            cache["processor"] = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
+            cache["model"] = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
+            cache["model"].to(DEVICE)
+            print(f"模型 '{MODEL_NAME}' 已載入並快取。")
+        except Exception as e:
+            print(f"處理或載入模型 '{MODEL_NAME}' 時發生錯誤: {e}")
+            raise RuntimeError(f"Failed to load model '{MODEL_NAME}': {e}")
 
-    # 【【【【【 關鍵修改 1：更智能地處理原始句子 】】】】】
-    # 使用正則表達式來準確地分割單詞，並自動忽略標點符號
+    # 從此函數的獨立快取中獲取模型和處理器
+    processor = cache["processor"]
+    model = cache["model"]
+
+    # --- 以下為原始分析邏輯，保持不變 ---
     target_words_original = re.findall(r"[\w'-]+", target_sentence)
-    # 將分割好的、乾淨的單詞重新組合，再傳給 phonemize  
     cleaned_sentence = " ".join(target_words_original)
 
-    # 使用 espeak 獲取法語目標音素
     epi_fr = epitran.Epitran('fra-Latn')
     target_ipa_full = epi_fr.transliterate(cleaned_sentence)
     target_ipa_by_word_str = target_ipa_full.split()
 
-    # 【【【【【 確保兩個列表長度一致 】】】】】
     if len(target_ipa_by_word_str) != len(target_words_original):
         target_words_original = target_words_original[:len(target_ipa_by_word_str)]
 
-    # 對於法語，我們將特殊符號移除，並使用簡單的字元切分
     target_ipa_by_word = [
         _tokenize_unicode_ipa(word.replace('ˈ', '').replace('ˌ', '').replace('‿', '').replace("'", ""))
         for word in target_ipa_by_word_str
     ]
-    # target_words_original 已經在上面被正確賦值了
 
     try:
         speech, sample_rate = sf.read(audio_file_path)
@@ -122,7 +100,6 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
     """
     執行音素對齊。對法語使用簡單的字元切分。
     """
-    # 對於 user 的音素字串，也使用簡單的字元切分
     user_phonemes = _tokenize_unicode_ipa(user_phoneme_str)
     
     target_phonemes_flat = []
@@ -217,7 +194,6 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     total_words = len(original_words)
     if len(alignments) < total_words:
         for i in range(len(alignments), total_words):
-            # 確保這裡也移除相關符號
             missed_word_ipa_str = phonemize(original_words[i], language='fr-fr', backend='espeak', strip=True).replace('ˈ', '').replace('ˌ', '').replace('‿', '')
             missed_word_ipa = _tokenize_unicode_ipa(missed_word_ipa_str)
             phonemes_data = []
