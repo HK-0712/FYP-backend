@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 # 刪除了舊的 load_model() 函數。
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"INFO: ASR_de_de.py is configured to use device: {DEVICE}")
-MODEL_NAME = "HK0712/Wav2Vec2_German_IPA"
+MODEL_NAME = "HK0712/ASR_Germen_Wav2Vec2_Local_Train"
 
 # --- 2. 智能 IPA 切分函數 (保持不變) ---
 MULTI_CHAR_PHONEMES = {
