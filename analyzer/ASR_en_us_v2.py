@@ -1,23 +1,50 @@
 import torch
 import soundfile as sf
 import librosa
-from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
+# 【【【【【 修改 #1：從 transformers 匯入 AutoProcessor 和 AutoModelForCTC 】】】】】
+from transformers import AutoProcessor, AutoModelForCTC
 import os
 from phonemizer import phonemize
 import numpy as np
 from datetime import datetime, timezone
 
-# --- 1. 全域設定 (已修改) ---
-# 移除了全域的 processor 和 model 變數，只保留常數。
-MODEL_NAME = "MultiBridge/wav2vec-LnNor-IPA-ft"
+# --- 全域設定 (已修改) ---
+# 移除了全域的 processor 和 model 變數。
+# 刪除了舊的 load_model() 函數。
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"INFO: ASR_en_us.py is configured to use device: {DEVICE}")
+print(f"INFO: ASR_en_us_v2.py is configured to use device: {DEVICE}")
 
-# --- 2. 智能 IPA 切分函數 (保持不變) ---
+# 【【【【【 修改 #2：更新為最終選定的 KoelLabs 模型名稱 】】】】】
+MODEL_NAME = "KoelLabs/xlsr-english-01"
+
+# 【【【【【 新增程式碼 #1：為 KoelLabs 模型設計的 IPA 正規化器 】】】】】
+# 【保持不變】
+def normalize_koel_ipa(raw_phonemes: list) -> list:
+    """
+    將 KoelLabs 模型輸出的高級 IPA 序列，正規化為與 eSpeak 輸出可比的基礎 IPA 序列。
+    """
+    normalized_phonemes = []
+    for phoneme in raw_phonemes:
+        if not phoneme:
+            continue
+            
+        base_phoneme = phoneme.replace('ʰ', '').replace('̃', '').replace('̥', '')
+        
+        if base_phoneme == 'β':
+            base_phoneme = 'v'
+        elif base_phoneme in ['x', 'ɣ', 'ɦ']:
+            base_phoneme = 'h'
+            
+        normalized_phonemes.append(base_phoneme)
+        
+    return normalized_phonemes
+
+# --- 2. 智能 IPA 切分函數 (與您的原版邏輯完全相同) ---
+# 【保持不變】
 MULTI_CHAR_PHONEMES = {
-    'tʃ', 'dʒ', # 輔音 (Affricates)
-    'eɪ', 'aɪ', 'oʊ', 'aʊ', 'ɔɪ', # 雙元音 (Diphthongs)
-    'ɪə', 'eə', 'ʊə', 'ər' # R-controlled 和其他組合
+    'tʃ', 'dʒ',
+    'eɪ', 'aɪ', 'oʊ', 'aʊ', 'ɔɪ',
+    'ɪə', 'eə', 'ʊə', 'ər'
 }
 
 def _tokenize_ipa(ipa_string: str) -> list:
@@ -36,8 +63,7 @@ def _tokenize_ipa(ipa_string: str) -> list:
             i += 1
     return phonemes
 
-# --- 3. 核心分析函數 (主入口) (已修改) ---
-# 刪除了舊的 load_model() 函數，並將其邏輯合併至此。
+# --- 3. 核心分析函數 (主入口) (已修改以整合正規化器和快取邏輯) ---
 def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dict:
     """
     接收音訊檔案路徑和目標句子，回傳詳細的發音分析字典。
@@ -45,11 +71,12 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
     """
     # 檢查快取中是否已有模型，如果沒有則載入
     if "model" not in cache:
-        print(f"快取未命中 (ASR_en_us)。正在載入模型 '{MODEL_NAME}'...")
+        print(f"快取未命中 (ASR_en_us_v2)。正在載入模型 '{MODEL_NAME}'...")
         try:
+            # 【【【【【 修改 #3：使用 AutoProcessor 和 AutoModelForCTC 載入模型 】】】】】
             # 載入模型並存入此函數的快取字典
-            cache["processor"] = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-            cache["model"] = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
+            cache["processor"] = AutoProcessor.from_pretrained(MODEL_NAME)
+            cache["model"] = AutoModelForCTC.from_pretrained(MODEL_NAME)
             cache["model"].to(DEVICE)
             print(f"模型 '{MODEL_NAME}' 已載入並快取。")
         except Exception as e:
@@ -81,14 +108,21 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
     with torch.no_grad():
         logits = model(input_values).logits
     predicted_ids = torch.argmax(logits, dim=-1)
-    user_ipa_full = processor.decode(predicted_ids[0])
+    
+    # 【【【【【 修改 #4：在此處插入正規化步驟 】】】】】
+    # 【保持不變】
+    raw_user_ipa_str = processor.decode(predicted_ids[0])
+    raw_user_phonemes = raw_user_ipa_str.split(' ')
+    normalized_user_phonemes = normalize_koel_ipa(raw_user_phonemes)
+    user_ipa_full = "".join(normalized_user_phonemes)
 
     word_alignments = _get_phoneme_alignments_by_word(user_ipa_full, target_ipa_by_word)
 
     return _format_to_json_structure(word_alignments, target_sentence, target_words_original)
 
 
-# --- 4. 對齊函數 (保持不變) ---
+# --- 4. 對齊函數 (與您的原版邏輯完全相同) ---
+# 【保持不變】
 def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized):
     """
     (已修改) 使用新的切分邏輯執行音素對齊。
@@ -143,7 +177,8 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
             
     return alignments_by_word
 
-# --- 5. 格式化函數 (保持不變) ---
+# --- 5. 格式化函數 (與您的原版邏輯完全相同) ---
+# 【保持不變】
 def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     total_phonemes = 0
     total_errors = 0
