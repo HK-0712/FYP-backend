@@ -51,9 +51,9 @@ def _tokenize_ipa(ipa_string: str) -> list:
     """
     將 IPA 字串智能地切分為音素列表，能正確處理多字元音素。
     """
+    s = ipa_string.replace(' ', '').replace('ˌ', '').replace('ˈ', '').replace('ː', '')
     phonemes = []
     i = 0
-    s = ipa_string.replace(' ', '')
     while i < len(s):
         if i + 1 < len(s) and s[i:i+2] in MULTI_CHAR_PHONEMES:
             phonemes.append(s[i:i+2])
@@ -63,6 +63,74 @@ def _tokenize_ipa(ipa_string: str) -> list:
             i += 1
     return phonemes
 
+# 【【【【【 全新函式：智慧 G2P 歸屬邏輯 - 方案 B 版本 】】】】】
+def _get_target_ipa_by_word(sentence: str) -> (list, list):
+    """
+    使用「啟發式拆分」方法（方案B），將句子級 G2P 結果智慧地歸屬到每個單字。
+    """
+    original_words = sentence.strip().split()
+    
+    # 1. 獲取句子級別的 G2P 結果
+    sentence_ipa_groups_raw = [s.strip('[]') for s in phonemize(sentence, language='en-us', backend='espeak', with_stress=True, strip=True).split()]
+    sentence_ipa_groups = [_tokenize_ipa(group) for group in sentence_ipa_groups_raw]
+
+    # 如果數量剛好匹配，直接返回，這是最理想的情況
+    if len(original_words) == len(sentence_ipa_groups):
+        print("G2P alignment perfect match. No heuristic needed.")
+        return original_words, sentence_ipa_groups
+
+    # 2. 數量不匹配，啟用啟發式歸屬邏輯
+    print(f"G2P Mismatch Detected: {len(original_words)} words vs {len(sentence_ipa_groups)} IPA groups. Applying heuristic splitting.")
+    
+    # 獲取單字級別的 G2P 結果作為參考
+    word_ipas_reference = [_tokenize_ipa(phonemize(word, language='en-us', backend='espeak', strip=True)) for word in original_words]
+
+    final_ipa_by_word = []
+    word_idx = 0
+    ipa_group_idx = 0
+
+    while word_idx < len(original_words):
+        # 邊界檢查：如果句子級音標已經用完
+        if ipa_group_idx >= len(sentence_ipa_groups):
+            print(f"Warning: Ran out of sentence IPA groups. Appending reference IPA for '{original_words[word_idx]}'.")
+            final_ipa_by_word.append(word_ipas_reference[word_idx])
+            word_idx += 1
+            continue
+
+        current_word = original_words[word_idx]
+        current_ipa_group = sentence_ipa_groups[ipa_group_idx]
+        ref_ipa_len = len(word_ipas_reference[word_idx])
+        
+        # 啟發式核心：如果當前句子級音標組比參考音標長，且這不是最後一個詞
+        if len(current_ipa_group) > ref_ipa_len and word_idx + 1 < len(original_words):
+            # 假設多出來的部分屬於下一個詞
+            print(f"Heuristic Split: Splitting IPA group for '{current_word}' and '{original_words[word_idx+1]}'.")
+            
+            # 切分！
+            ipa_for_current_word = current_ipa_group[:ref_ipa_len]
+            ipa_for_next_word = current_ipa_group[ref_ipa_len:]
+            
+            final_ipa_by_word.append(ipa_for_current_word)
+            final_ipa_by_word.append(ipa_for_next_word)
+            
+            # 一次處理了兩個詞，所以索引都要加 2
+            word_idx += 2
+            ipa_group_idx += 1
+        else:
+            # 正常情況：長度匹配或無法應用啟發式規則
+            final_ipa_by_word.append(current_ipa_group)
+            word_idx += 1
+            ipa_group_idx += 1
+
+    # 最後的長度校驗，如果不匹配，證明啟發式失敗，執行最終回退
+    if len(final_ipa_by_word) != len(original_words):
+        print(f"Heuristic splitting failed (final count: {len(final_ipa_by_word)} vs {len(original_words)}). Falling back to word-by-word G2P for safety.")
+        return original_words, word_ipas_reference
+
+    print("Heuristic splitting successful.")
+    return original_words, final_ipa_by_word
+
+
 # --- 3. 核心分析函數 (主入口) (已修改以整合正規化器和快取邏輯) ---
 def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dict:
     """
@@ -71,10 +139,8 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
     """
     # 檢查快取中是否已有模型，如果沒有則載入
     if "model" not in cache:
-        print(f"快取未命中 (ASR_en_us_v2)。正在載入模型 '{MODEL_NAME}'...")
+        print(f"快取未命中 (ASR_en_us)。正在載入模型 '{MODEL_NAME}'...")
         try:
-            # 【【【【【 修改 #3：使用 AutoProcessor 和 AutoModelForCTC 載入模型 】】】】】
-            # 載入模型並存入此函數的快取字典
             cache["processor"] = AutoProcessor.from_pretrained(MODEL_NAME)
             cache["model"] = AutoModelForCTC.from_pretrained(MODEL_NAME)
             cache["model"].to(DEVICE)
@@ -87,15 +153,9 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
     processor = cache["processor"]
     model = cache["model"]
 
-    # --- 以下為原始分析邏輯，保持不變 ---
-    target_ipa_by_word_str = phonemize(target_sentence, language='en-us', backend='espeak', with_stress=True, strip=True).split()
+    # --- 【【【【【 主要修改點：使用新的智慧 G2P 函式 】】】】】 ---
+    target_words_original, target_ipa_by_word = _get_target_ipa_by_word(target_sentence)
     
-    target_ipa_by_word = [
-        _tokenize_ipa(word.replace('ˌ', '').replace('ˈ', '').replace('ː', ''))
-        for word in target_ipa_by_word_str
-    ]
-    target_words_original = target_sentence.split()
-
     try:
         speech, sample_rate = sf.read(audio_file_path)
         if sample_rate != 16000:
@@ -109,8 +169,6 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
         logits = model(input_values).logits
     predicted_ids = torch.argmax(logits, dim=-1)
     
-    # 【【【【【 修改 #4：在此處插入正規化步驟 】】】】】
-    # 【保持不變】
     raw_user_ipa_str = processor.decode(predicted_ids[0])
     raw_user_phonemes = raw_user_ipa_str.split(' ')
     normalized_user_phonemes = normalize_koel_ipa(raw_user_phonemes)
@@ -160,22 +218,39 @@ def _get_phoneme_alignments_by_word(user_phoneme_str, target_words_ipa_tokenized
     word_start_idx_in_path = 0
     target_phoneme_counter_in_path = 0
 
+    num_words_to_align = len(target_words_ipa_tokenized)
+    current_word_idx = 0
+    
+    if not target_path:
+        return []
+
     for path_idx, p in enumerate(target_path):
         if p != '-':
             if target_phoneme_counter_in_path in word_boundaries_indices:
-                target_alignment = target_path[word_start_idx_in_path : path_idx + 1]
-                user_alignment = user_path[word_start_idx_in_path : path_idx + 1]
-                
-                alignments_by_word.append({
-                    "target": target_alignment,
-                    "user": user_alignment
-                })
-                
-                word_start_idx_in_path = path_idx + 1
-            
+                if current_word_idx < num_words_to_align:
+                    target_alignment = target_path[word_start_idx_in_path : path_idx + 1]
+                    user_alignment = user_path[word_start_idx_in_path : path_idx + 1]
+                    
+                    alignments_by_word.append({
+                        "target": target_alignment,
+                        "user": user_alignment
+                    })
+                    
+                    word_start_idx_in_path = path_idx + 1
+                    current_word_idx += 1
+
             target_phoneme_counter_in_path += 1
-            
+    
+    if word_start_idx_in_path < len(target_path) and current_word_idx < num_words_to_align:
+        target_alignment = target_path[word_start_idx_in_path:]
+        user_alignment = user_path[word_start_idx_in_path:]
+        alignments_by_word.append({
+            "target": target_alignment,
+            "user": user_alignment
+        })
+
     return alignments_by_word
+
 
 # --- 5. 格式化函數 (與您的原版邏輯完全相同) ---
 # 【保持不變】
@@ -192,23 +267,27 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
         word_is_correct = True
         phonemes_data = []
         
-        for j in range(len(alignment['target'])):
-            target_phoneme = alignment['target'][j]
-            user_phoneme = alignment['user'][j]
-            is_match = (user_phoneme == target_phoneme)
-            
-            phonemes_data.append({
-                "target": target_phoneme,
-                "user": user_phoneme,
-                "isMatch": is_match
-            })
-            
-            if not is_match:
-                word_is_correct = False
-                if not (user_phoneme == '-' and target_phoneme == '-'):
-                    total_errors += 1
-        
-        if word_is_correct:
+        if not alignment or not alignment.get('target'):
+            word_is_correct = False
+        else:
+            for j in range(len(alignment['target'])):
+                target_phoneme = alignment['target'][j]
+                user_phoneme = alignment['user'][j]
+                is_match = (user_phoneme == target_phoneme)
+                
+                phonemes_data.append({
+                    "target": target_phoneme,
+                    "user": user_phoneme,
+                    "isMatch": is_match
+                })
+                
+                if not is_match:
+                    word_is_correct = False
+                    if not (user_phoneme == '-' and target_phoneme == '-'):
+                        total_errors += 1
+            total_phonemes += sum(1 for p in alignment['target'] if p != '-')
+
+        if word_is_correct and phonemes_data:
             correct_words_count += 1
             
         words_data.append({
@@ -217,12 +296,10 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
             "phonemes": phonemes_data
         })
         
-        total_phonemes += sum(1 for p in alignment['target'] if p != '-')
-
     total_words = len(original_words)
-    if len(alignments) < total_words:
-        for i in range(len(alignments), total_words):
-            missed_word_ipa_str = phonemize(original_words[i], language='en-us', backend='espeak', strip=True).replace('ː', '')
+    if len(words_data) < total_words:
+        for i in range(len(words_data), total_words):
+            missed_word_ipa_str = phonemize(original_words[i], language='en-us', backend='espeak', strip=True)
             missed_word_ipa = _tokenize_ipa(missed_word_ipa_str)
             phonemes_data = []
             for p_ipa in missed_word_ipa:
