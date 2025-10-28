@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 # 移除了全域的 processor 和 model 變數。
 # 刪除了舊的 load_model() 函數。
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"INFO: ASR_en_us_v2.py is configured to use device: {DEVICE}")
+print(f"INFO: ASR_en_us.py is configured to use device: {DEVICE}")
 
 # 【【【【【 修改 #2：更新為最終選定的 KoelLabs 模型名稱 】】】】】
 MODEL_NAME = "KoelLabs/xlsr-english-01"

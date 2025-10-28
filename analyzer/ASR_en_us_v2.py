@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 # 移除了全域的 processor 和 model 變數，只保留常數。
 MODEL_NAME = "MultiBridge/wav2vec-LnNor-IPA-ft"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"INFO: ASR_en_us.py is configured to use device: {DEVICE}")
+print(f"INFO: ASR_en_us_v2.py is configured to use device: {DEVICE}")
 
 # --- 2. 智能 IPA 切分函數 (保持不變) ---
 MULTI_CHAR_PHONEMES = {
