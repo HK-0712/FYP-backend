@@ -3,15 +3,81 @@ import soundfile as sf
 import librosa
 from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 import os
+import json
+import epitran
 from phonemizer import phonemize
 import numpy as np
 from datetime import datetime, timezone
+import re
 
 # --- 1. 全域設定 (已修改) ---
 # 移除了全域的 processor 和 model 變數，只保留常數。
 MODEL_NAME = "KoelLabs/xlsr-english-01"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"INFO: ASR_en_us.py is configured to use device: {DEVICE}")
+
+# 在檔案頂端或接近全域設定區新增 lexicon 與 Epitran 初始化
+LEXICON_PATH = os.path.join(os.path.dirname(__file__), "lexicon_en_us.json")
+try:
+    if os.path.exists(LEXICON_PATH):
+        with open(LEXICON_PATH, "r", encoding="utf-8") as f:
+            LEXICON = json.load(f)
+    else:
+        LEXICON = {}
+except Exception:
+    LEXICON = {}
+
+def _save_lexicon():
+    try:
+        with open(LEXICON_PATH, "w", encoding="utf-8") as f:
+            json.dump(LEXICON, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+# 初始化 Epitran（記憶體 lexicon，不寫 JSON）
+try:
+    epi = epitran.Epitran("eng-Latn")
+    print("INFO: Epitran initialized for English (eng-Latn)")
+except Exception as e:
+    print(f"WARN: Epitran init failed for en_us: {e}")
+    epi = None
+
+def _get_word_ipa(word: str, cache: dict) -> str:
+    """
+    以 cache 為快取容器（key: 'lexicon_en_us'），字典優先、epitran 優先、espeak 備援。
+    不寫檔案，僅記在記憶體 cache 中。
+    回傳 IPA 字串（可能包含多字元 token），一個 word -> 一個 IPA 字串保證。
+    """
+    if not word or not word.strip():
+        return ""
+
+    lex = cache.setdefault("lexicon_en_us", {})
+    key = word.strip().lower()
+    if key in lex:
+        return lex[key]
+
+    ipa = ""
+    # 1) epitran 優先（逐字）
+    try:
+        if epi:
+            ipa = epi.transliterate(word).strip()
+    except Exception:
+        ipa = ""
+
+    # 2) 若 epitran 無效或回傳空字串，使用 phonemizer/espeak 單字呼叫作為備援
+    if not ipa:
+        try:
+            ipa = phonemize(word, language='en-us', backend='espeak', with_stress=True, strip=True)
+            ipa = ipa.strip()
+        except Exception:
+            ipa = ""
+
+    # 3) 最後 fallback：直接使用 word characters（保證回傳非 None）
+    if ipa is None or ipa == "":
+        ipa = "".join(list(word))
+
+    lex[key] = ipa
+    return ipa
 
 # --- 2. 智能 IPA 切分函數 (保持不變) ---
 MULTI_CHAR_PHONEMES = {
@@ -38,11 +104,14 @@ def _tokenize_ipa(ipa_string: str) -> list:
 
 # --- 3. 核心分析函數 (主入口) (已修改) ---
 # 刪除了舊的 load_model() 函數，並將其邏輯合併至此。
-def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dict:
+def analyze(audio_file_path: str, target_sentence: str, cache: dict = None) -> dict:
     """
     接收音訊檔案路徑和目標句子，回傳詳細的發音分析字典。
     模型會被載入並儲存在此函數獨立的 'cache' 中，實現狀態隔離。
     """
+    if cache is None:
+        cache = {}
+
     # 檢查快取中是否已有模型，如果沒有則載入
     if "model" not in cache:
         print(f"快取未命中 (ASR_en_us)。正在載入模型 '{MODEL_NAME}'...")
@@ -61,13 +130,15 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
     model = cache["model"]
 
     # --- 以下為原始分析邏輯，保持不變 ---
-    target_ipa_by_word_str = phonemize(target_sentence, language='en-us', backend='espeak', with_stress=True, strip=True).split()
-    
-    target_ipa_by_word = [
-        _tokenize_ipa(word.replace('ˌ', '').replace('ˈ', '').replace('ː', ''))
-        for word in target_ipa_by_word_str
-    ]
-    target_words_original = target_sentence.split()
+    # 取每個詞的 IPA（逐字呼叫），保證 1 word = 1 IPA entry（no sentence-level phonemize）
+    words = target_sentence.split()
+    target_ipa_by_word = []
+    for w in words:
+        ipa_str = _get_word_ipa(w, cache)
+        cleaned = ipa_str.replace('ˌ', '').replace('ˈ', '').replace('ː', '')
+        target_ipa_by_word.append(_tokenize_ipa(cleaned))
+
+    target_words_original = words
 
     try:
         speech, sample_rate = sf.read(audio_file_path)
@@ -81,7 +152,19 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
     with torch.no_grad():
         logits = model(input_values).logits
     predicted_ids = torch.argmax(logits, dim=-1)
-    user_ipa_full = processor.decode(predicted_ids[0])
+    # 1) 將 ASR 解碼成文字
+    decoded_text = processor.decode(predicted_ids[0]).strip()
+    # 2) 基本清理（去掉標點，但保留單字內的撇號與連字）
+    decoded_text = re.sub(r"[^\w\s'-]", "", decoded_text)
+    # 3) 逐字轉 IPA（使用記憶體 cache、epitran 優先、espeak 備援）
+    asr_words = decoded_text.split()
+    user_ipa_word_tokens = []
+    for w in asr_words:
+        ipa_str = _get_word_ipa(w, cache)
+        cleaned = ipa_str.replace('ˌ', '').replace('ˈ', '').replace('ː', '')
+        user_ipa_word_tokens.append(_tokenize_ipa(cleaned))
+    # 4) 合併成供對齊使用的單一 IPA 字串（不含空格）
+    user_ipa_full = "".join("".join(toks) for toks in user_ipa_word_tokens)
 
     word_alignments = _get_phoneme_alignments_by_word(user_ipa_full, target_ipa_by_word)
 
@@ -219,3 +302,31 @@ def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     }
     
     return final_result
+
+# 將原本的 _get_target_phonemes_by_word (或相等功能) 改為使用 lexicon 優先 + epitran 備援
+def _get_target_phonemes_by_word(text: str) -> tuple[list[str], list[list[str]]]:
+    """
+    針對 English (en_us) 的詞到音素處理：字典優先、Epitran 備援、快取至 lexicon_en_us.json。
+    回傳 (原始詞列表, 每個詞的音素列表)
+    """
+    if not text or not text.strip():
+        return [], []
+
+    # 簡單以空白分詞；若輸入無空白則逐字
+    words = text.split() if ' ' in text.strip() else list(text.strip())
+
+    target_words_original = []
+    target_ipa_by_word = []
+
+    for w in words:
+        w_stripped = w.strip()
+        if not w_stripped:
+            continue
+        try:
+            phonemes = _get_phonemes_for_word_en(w_stripped)
+        except Exception:
+            phonemes = list(w_stripped)
+        target_words_original.append(w_stripped)
+        target_ipa_by_word.append(phonemes)
+
+    return target_words_original, target_ipa_by_word
