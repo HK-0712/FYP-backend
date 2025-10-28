@@ -12,7 +12,7 @@ import re
 
 # --- 1. 全域設定 (已修改) ---
 # 移除了全域的 processor 和 model 變數，只保留常數。
-MODEL_NAME = "KoelLabs/xlsr-english-01"
+MODEL_NAME = "MultiBridge/wav2vec-LnNor-IPA-ft"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"INFO: ASR_en_us.py is configured to use device: {DEVICE}")
 

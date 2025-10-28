@@ -15,7 +15,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"INFO: ASR_en_us_v2.py is configured to use device: {DEVICE}")
 
 # 【【【【【 修改 #2：更新為最終選定的 KoelLabs 模型名稱 】】】】】
-MODEL_NAME = "MultiBridge/wav2vec-LnNor-IPA-ft"
+MODEL_NAME = "KoelLabs/xlsr-english-01"
 
 # 【【【【【 新增程式碼 #1：為 KoelLabs 模型設計的 IPA 正規化器 】】】】】
 # 【保持不變】
