@@ -5,7 +5,7 @@
 import torch
 import soundfile as sf
 import librosa
-from transformers import Wav2Vec2Processor, Wav2Vec2BertForCTC
+from transformers import AutoProcessor, AutoModelForCTC
 import os
 import epitran
 import numpy as np
@@ -109,8 +109,9 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
         print(f"快取未命中 (ASR_zh_hk)。正在載入模型 '{MODEL_NAME}'...")
         try:
             # 載入模型並存入此函數的快取字典
-            cache["processor"] = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-            cache["model"] = Wav2Vec2BertForCTC.from_pretrained(MODEL_NAME)
+            # Wav2Vec2-BERT 需要使用 AutoProcessor 和 AutoModelForCTC
+            cache["processor"] = AutoProcessor.from_pretrained(MODEL_NAME)
+            cache["model"] = AutoModelForCTC.from_pretrained(MODEL_NAME)
             cache["model"].to(DEVICE)
             print(f"模型 '{MODEL_NAME}' 已載入並快取。")
         except Exception as e:
@@ -140,12 +141,14 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
             if sample_rate != 16000:
                 speech = librosa.resample(y=speech, orig_sr=sample_rate, target_sr=16000)
             
-            input_values = processor(speech, sampling_rate=16000, return_tensors="pt").input_values
-            input_values = input_values.to(DEVICE)
+            # Wav2Vec2-BERT 需要使用 audio 參數而不是直接傳入音訊
+            inputs = processor(audio=speech, sampling_rate=16000, return_tensors="pt")
+            inputs = {key: value.to(DEVICE) for key, value in inputs.items()}
+            
             with torch.no_grad():
-                logits = model(input_values).logits
+                logits = model(**inputs).logits
             predicted_ids = torch.argmax(logits, dim=-1)
-            user_ipa_full = processor.decode(predicted_ids[0])
+            user_ipa_full = processor.batch_decode(predicted_ids)[0]
     
     except Exception as e:
         raise IOError(f"讀取或處理音訊時發生錯誤: {e}")
