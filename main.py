@@ -107,7 +107,7 @@ async def log_requests(request: Request, call_next):
 
     start_time = time.time()
     response = await call_next(request)
-    process_time = (time.time() - start_time) * 1000
+    process_time = time.time() - start_time
     
     # 根據狀態碼選擇 Emoji
     if 200 <= response.status_code < 300:
@@ -118,7 +118,7 @@ async def log_requests(request: Request, call_next):
         status_emoji = "💥"
 
     # 格式: [Emoji] [Method] [Path] [Status] - [Time]
-    print(f"{status_emoji}  {request.method} {request.url.path} {response.status_code} - {process_time:.2f}ms")
+    print(f"{status_emoji}  {request.method} {request.url.path} {response.status_code} - {process_time:.2f}s")
     
     return response
 
