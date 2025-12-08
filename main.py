@@ -9,10 +9,11 @@ import logging
 import importlib
 import uvicorn
 import shutil
-import re  # <--- 【【新增】】為了動態掃描檔案
+import re
+import time  # <--- 【新增】時間計算
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, APIRouter
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, APIRouter, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 class HealthCheckFilter(logging.Filter):
@@ -67,28 +68,28 @@ def discover_supported_languages():
 async def lifespan(app: FastAPI):
     # --- 應用程式啟動時執行的程式碼 ---
     print("="*60)
-    print(f"Application starting up in '{APP_ENV}' mode.")
+    print(f"🚀 Application starting up in '{APP_ENV}' mode.")
     
     discover_supported_languages() # 首先，動態發現支援的語言
     
     if APP_ENV == "production":
-        print("Production mode detected. Eager loading all models...")
+        print("🏭 Production mode detected. Eager loading all models...")
         for lang in SUPPORTED_LANGUAGES:
             try:
-                print(f"--- Loading model for language: {lang} ---")
+                print(f"⏳ Loading model for language: {lang} ...")
                 analyzer_module = importlib.import_module(f"analyzer.ASR_{lang}")
                 ANALYZERS[lang] = analyzer_module
-                print(f"--- Model for {lang} loaded successfully. ---")
+                print(f"✅ Model for {lang} loaded successfully.")
             except Exception as e:
-                print(f"FATAL: Failed to load model for {lang}. Error: {e}")
-        print("All models pre-loaded. Application is ready for requests.")
+                print(f"❌ FATAL: Failed to load model for {lang}. Error: {e}")
+        print("✨ All models pre-loaded. Application is ready for requests.")
     else:
-        print("Development mode detected. Models will be loaded on-demand (lazily).")
+        print("🛠️  Development mode detected. Models will be loaded on-demand (lazily).")
     
     print("="*60)
     yield # <--- 應用程式在這裡運行
     # --- 應用程式關閉時執行的程式碼 ---
-    print("Application shutting down.")
+    print("🛑 Application shutting down.")
 
 # =======================================================================
 # 4. FastAPI 應用程式實例化與中介軟體設定區
@@ -96,6 +97,30 @@ async def lifespan(app: FastAPI):
 # =======================================================================
 # 【【修改】】告訴 FastAPI 使用我們上面定義的 lifespan
 app = FastAPI(title="Pronunciation Analysis API", lifespan=lifespan)
+
+# 【【新增】】Emoji 日誌 Middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    # 排除 health check 避免刷屏
+    if "/health" in request.url.path:
+        return await call_next(request)
+
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = (time.time() - start_time) * 1000
+    
+    # 根據狀態碼選擇 Emoji
+    if 200 <= response.status_code < 300:
+        status_emoji = "✅"
+    elif 400 <= response.status_code < 500:
+        status_emoji = "⚠️ "
+    else:
+        status_emoji = "💥"
+
+    # 格式: [Emoji] [Method] [Path] [Status] - [Time]
+    print(f"{status_emoji}  {request.method} {request.url.path} {response.status_code} - {process_time:.2f}ms")
+    
+    return response
 
 @app.get("/health", status_code=200)
 def health_check():
@@ -123,17 +148,17 @@ def get_analyzer_module(language: str):
         return ANALYZERS[language]
     
     # 這段程式碼只會在開發模式下被執行
-    print(f"'{language}' not in cache. Loading on-demand (development mode)...")
+    print(f"🐢 '{language}' not in cache. Loading on-demand (development mode)...")
     try:
         analyzer_module = importlib.import_module(f"analyzer.ASR_{language}")
         ANALYZERS[language] = analyzer_module
-        print(f"'{language}' analyzer loaded and cached successfully.")
+        print(f"⚡ '{language}' analyzer loaded and cached successfully.")
         return analyzer_module
     except ImportError:
-        print(f"Error: Analyzer module for '{language}' not found (analyzer.ASR_{language}.py).")
+        print(f"❌ Error: Analyzer module for '{language}' not found (analyzer.ASR_{language}.py).")
         raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
     except Exception as e:
-        print(f"Error: A critical error occurred while loading the model for '{language}': {e}")
+        print(f"💥 Error: A critical error occurred while loading the model for '{language}': {e}")
         raise HTTPException(status_code=500, detail=f"Failed to load model for language '{language}'.")
 
 # API 端點定義 (不變)
@@ -146,14 +171,14 @@ async def recognize_speech_api(
     analyzer_module = get_analyzer_module(language)
     base_filename = os.path.basename(file.filename)
     temp_file_path = os.path.join(TEMP_DIR, f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{base_filename}")
-    print(f"Processing file: {temp_file_path} with '{language}' analyzer.")
+    print(f"🎤 Processing file: {temp_file_path} with '{language}' analyzer.")
     try:
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         result = analyzer_module.analyze(temp_file_path, target_sentence)
         return result
     except Exception as e:
-        print(f"An unexpected error occurred during request processing: {e}")
+        print(f"💥 An unexpected error occurred during request processing: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(temp_file_path):
