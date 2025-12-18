@@ -13,3 +13,4 @@ g2p
 pyopenjtalk
 mecab-python3
 aiohttp
+pycantonese
