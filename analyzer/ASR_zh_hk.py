@@ -14,64 +14,48 @@ print(f"INFO: ASR_zh_hk.py is configured to use device: {DEVICE}")
 
 MODEL_NAME = "HK0712/Wav2Vec2_Cantonese"
 
-# --- 1. 輔助函數：粵拼智慧切分器 (Linguistic Split) ---
+# --- 1. 輔助函數：粵拼智慧切分器 ---
 def _tokenize_jyutping_smart(jyutping_str: str) -> list:
     """
     將單個粵拼音節 (如 'gwong2') 根據聲韻學結構切分為 token。
     Target: 'gwong2' -> ['gw', 'o', 'ng', '2']
-    這樣前端顯示時會是 "gw o ng 2"，比 "g w o n g 2" 易讀得多。
     """
     try:
-        # pycantonese.parse_jyutping 回傳的是一個列表，包含 Jyutping 物件
-        # 例如: parse_jyutping('gwong2') -> [Jyutping(onset='gw', nucleus='o', coda='ng', tone='2')]
         parsed = pycantonese.parse_jyutping(jyutping_str)
-        
         tokens = []
         for jp in parsed:
             if jp.onset: tokens.append(jp.onset)
             if jp.nucleus: tokens.append(jp.nucleus)
             if jp.coda: tokens.append(jp.coda)
             if jp.tone: tokens.append(jp.tone)
-            
         return tokens
     except:
-        # 萬一解析失敗（例如模型輸出的拼音不標準），回退到簡單切分
-        # 但保留數字作為獨立 token
         return re.findall(r'[a-z]+|[0-9]', jyutping_str)
 
-# --- 2. 智慧 G2P 歸屬邏輯 (中文版) ---
+# --- 2. 智慧 G2P 歸屬邏輯 ---
 def _get_target_jyutping_by_char(sentence: str) -> (list, list):
     """
     將中文句子轉換為「字」級別的粵拼目標。
     """
-    # pycantonese.characters_to_jyutping 會處理變調與分詞
-    # 範例: "廣東話" -> [('廣東話', 'gwong2dung1waa2')]
     segmented_result = pycantonese.characters_to_jyutping(sentence)
     
     original_chars_flat = []
     target_jyutping_groups = []
-
-    # 簡單的正則表達式，用來把連在一起的拼音分開 (e.g. 'gwong2dung1' -> 'gwong2', 'dung1')
     jyutping_syllable_pattern = re.compile(r'([a-z]+[1-6])')
 
     for word_segment, jyutping_segment in segmented_result:
-        if not jyutping_segment:
-            continue
+        if not jyutping_segment: continue
 
         syllables = jyutping_syllable_pattern.findall(jyutping_segment)
         
-        # 嘗試將分詞後的結果對齊回單個漢字
         if len(word_segment) == len(syllables):
             for char, syl in zip(word_segment, syllables):
                 original_chars_flat.append(char)
-                # 使用智慧切分：'gwong2' -> ['gw', 'o', 'ng', '2']
                 target_jyutping_groups.append(_tokenize_jyutping_smart(syl))
         else:
-            # 長度不匹配時的備用方案 (逐字處理)
             print(f"WARNING: Mismatch length for {word_segment}. Fallback to char-by-char G2P.")
             for char in word_segment:
                 original_chars_flat.append(char)
-                # 對單字再做一次 G2P
                 single_res = pycantonese.characters_to_jyutping(char)
                 if single_res and single_res[0][1]:
                     target_jyutping_groups.append(_tokenize_jyutping_smart(single_res[0][1]))
@@ -80,7 +64,7 @@ def _get_target_jyutping_by_char(sentence: str) -> (list, list):
 
     return original_chars_flat, target_jyutping_groups
 
-# --- 3. 核心分析函數 (主入口) ---
+# --- 3. 核心分析函數 ---
 def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dict:
     if "model" not in cache:
         print(f"Cache miss (ASR_zh_hk). Loading model '{MODEL_NAME}'...")
@@ -119,66 +103,28 @@ def analyze(audio_file_path: str, target_sentence: str, cache: dict = {}) -> dic
         logits = model(input_values).logits
     predicted_ids = torch.argmax(logits, dim=-1)
     
-    # 3. 獲取使用者輸出 (User Output)
-    # 模型輸出: "gwong2 dung1 waa2" (字串)
+    # 3. 獲取使用者輸出
     raw_output_str = processor.decode(predicted_ids[0])
     
-    # 清理並準備對齊
-    # 我們需要把用戶的輸出也變成 ['gw', 'o', 'ng', '2', 'd', 'u', 'ng', '1'...] 的流
-    # 這樣才能跟 Target 的結構對齊
-    
-    # 步驟 A: 移除空格，變成連續字串 "gwong2dung1waa2"
-    # 注意：這一步假設模型輸出的拼音是標準的。如果模型輸出亂碼，tokenize 可能會切得不完美，
-    # 但 Needleman-Wunsch 算法會處理這些 mismatch，所以沒關係。
-    user_jyutping_clean = raw_output_str.replace(" ", "")
-    
-    # 步驟 B: 使用相同的邏輯切分用戶輸入
-    # 因為用戶輸入是一長串，我們用正則表達式把 [a-z] 和 [0-9] 分開，或者嘗試 parse
-    # 這裡用一個簡單的策略：把它當作一連串的 components
-    # 為了最佳對齊，我們這裡還是用 "Character + Number" 的粒度比較好，
-    # 因為用戶可能讀錯導致無法形成合法的 onset/nucleus。
-    # 
-    # ★ 關鍵決策：為了避免用戶讀錯導致 crash，用戶端我們使用較細的粒度 (Regex Split)，
-    # 然後讓對齊算法去匹配 Target 的 "gw", "o", "ng"。
-    # 等等，如果 Target 是 "gw" (1個token)，User 是 "g", "w" (2個 tokens)，對齊會錯位。
-    # 
-    # ★ 修正策略：
-    # 我們也嘗試用 pycantonese.parse_jyutping 去解析用戶的整句輸出。
-    # 如果解析成功，我們就用結構化 token。如果失敗（亂讀），回退到字母切分。
-    
+    # 處理 User Tokens
+    # 嘗試抓取標準音節，如果失敗則退化為 smart parse
     user_tokens = []
-    # 嘗試把用戶輸出拆成音節 (e.g. "gwong2", "dung1")
     user_syllables = re.findall(r'[a-z]+[0-9]', raw_output_str)
     
     if user_syllables:
-        # 如果能抓到音節，就用結構化切分
         for syl in user_syllables:
             user_tokens.extend(_tokenize_jyutping_smart(syl))
     else:
-        # 如果抓不到（例如沒聲調），就退化成字母切分
-        # 但這會導致跟 Target (gw) 對不上。
-        # 為了保險，我們這裡對於 Target 也許應該退化成簡單切分？
-        # 不，Target 是 Ground Truth，應該保持結構。
-        # 
-        # 最終方案：讓 User stream 盡量 "粘" 在一起。
-        # 實際上，Wav2Vec2 輸出的通常是標準拼音。我們直接用 smart parse。
+        # 如果用戶完全沒讀出聲調，或者是亂碼
         user_tokens = _tokenize_jyutping_smart(raw_output_str)
-
 
     # 4. 對齊 (Alignment)
     word_alignments = _get_phoneme_alignments_by_word(user_tokens, target_jyutping_by_char)
 
     return _format_to_json_structure(word_alignments, target_sentence, target_chars)
 
-# --- 4. 對齊與格式化 (保持原樣或微調) ---
-# 這裡的邏輯與之前相同，不需要大改，因為它只是比較兩個 list 的相似度。
-# 只要 user_tokens 和 target_jyutping_by_char 的元素 (token) 粒度一致即可。
-# ... ( _get_phoneme_alignments_by_word 與 _format_to_json_structure 代碼同上) ...
 
-# 為了節省篇幅，請使用上一版提供的 _get_phoneme_alignments_by_word 和 _format_to_json_structure
-# 只需要替換上面的 _tokenize_jyutping_smart 和 analyze 函數即可。
-# 下面我會把完整的 _get_phoneme_alignments_by_word 貼上以確保完整性。
-
+# --- 4. 對齊函數 (已強化：類型感知 Type-Aware) ---
 def _get_phoneme_alignments_by_word(user_phonemes, target_words_ipa_tokenized):
     target_phonemes_flat = []
     word_boundaries_indices = [] 
@@ -189,27 +135,70 @@ def _get_phoneme_alignments_by_word(user_phonemes, target_words_ipa_tokenized):
         current_idx += len(word_ipa_tokens)
         word_boundaries_indices.append(current_idx - 1)
 
-    # DP Matrix
+    # DP Initialization
     dp = np.zeros((len(user_phonemes) + 1, len(target_phonemes_flat) + 1))
     for i in range(1, len(user_phonemes) + 1): dp[i][0] = i
     for j in range(1, len(target_phonemes_flat) + 1): dp[0][j] = j
     
+    # 【【【 Type-Aware Cost Calculation 】】】
     for i in range(1, len(user_phonemes) + 1):
         for j in range(1, len(target_phonemes_flat) + 1):
-            cost = 0 if user_phonemes[i-1] == target_phonemes_flat[j-1] else 1
+            u_char = user_phonemes[i-1]
+            t_char = target_phonemes_flat[j-1]
+            
+            # 判斷是否為數字 (聲調)
+            u_is_digit = u_char.isdigit()
+            t_is_digit = t_char.isdigit()
+            
+            if u_char == t_char:
+                cost = 0
+            elif u_is_digit != t_is_digit:
+                # 💥 關鍵修改：如果類型不同 (數字 vs 字母)，給予超大懲罰
+                # 這會強制算法選擇 Insertion 或 Deletion，而不是 Substitution
+                cost = 100 
+            else:
+                # 類型相同但字符不同 (e.g. '2' vs '3', 'a' vs 'o') -> 一般錯誤
+                cost = 1
+                
             dp[i][j] = min(dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + cost)
 
+    # Backtracking (需要保持一致的 cost 邏輯)
     i, j = len(user_phonemes), len(target_phonemes_flat)
     user_path, target_path = [], []
     while i > 0 or j > 0:
-        cost = float('inf') if i == 0 or j == 0 else (0 if user_phonemes[i-1] == target_phonemes_flat[j-1] else 1)
-        if i > 0 and j > 0 and dp[i][j] == dp[i-1][j-1] + cost:
-            user_path.insert(0, user_phonemes[i-1]); target_path.insert(0, target_phonemes_flat[j-1]); i -= 1; j -= 1
-        elif i > 0 and dp[i][j] == dp[i-1][j] + 1:
-            user_path.insert(0, user_phonemes[i-1]); target_path.insert(0, '-'); i -= 1
+        # 重算當前格子的 cost 以決定路徑
+        if i > 0 and j > 0:
+            u_char = user_phonemes[i-1]
+            t_char = target_phonemes_flat[j-1]
+            u_is_digit = u_char.isdigit()
+            t_is_digit = t_char.isdigit()
+            
+            if u_char == t_char:
+                match_cost = 0
+            elif u_is_digit != t_is_digit:
+                match_cost = 100
+            else:
+                match_cost = 1
         else:
-            user_path.insert(0, '-'); target_path.insert(0, target_phonemes_flat[j-1]); j -= 1
+            match_cost = float('inf') # 邊界情況
+
+        # 檢查是否來自對角線 (Substitution/Match)
+        if i > 0 and j > 0 and dp[i][j] == dp[i-1][j-1] + match_cost:
+            user_path.insert(0, user_phonemes[i-1])
+            target_path.insert(0, target_phonemes_flat[j-1])
+            i -= 1; j -= 1
+        # 檢查是否來自上方 (Deletion / Missing in User)
+        elif i > 0 and dp[i][j] == dp[i-1][j] + 1:
+            user_path.insert(0, user_phonemes[i-1])
+            target_path.insert(0, '-')
+            i -= 1
+        # 檢查是否來自左方 (Insertion / Extra in User)
+        else:
+            user_path.insert(0, '-')
+            target_path.insert(0, target_phonemes_flat[j-1])
+            j -= 1
     
+    # --- 下面的切分邏輯保持不變 ---
     alignments_by_word = []
     word_start_idx_in_path = 0
     target_phoneme_counter_in_path = 0
@@ -238,6 +227,7 @@ def _get_phoneme_alignments_by_word(user_phonemes, target_words_ipa_tokenized):
 
     return alignments_by_word
 
+# --- 5. 格式化函數 (保持與英文版一致) ---
 def _format_to_json_structure(alignments, sentence, original_words) -> dict:
     total_phonemes = 0
     total_errors = 0
